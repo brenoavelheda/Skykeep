@@ -116,6 +116,37 @@ body {
 .m-page :is(.nf-file, .nf-doc):hover { background: color-mix(in srgb, var(--text) 6%, transparent); }
 .m-page :is(.nf-file, .nf-doc):active { background: color-mix(in srgb, var(--text) 12%, transparent); }
 .m-page .note-rich .nf-attachment.is-pending { width: 100%; height: 56px; border-radius: 14px; }
+/* A long press chooses an attachment (main.tsx), so the phone's own menu for a picture and its
+   drag never start. */
+.m-page .note-rich .nf-attachment img { -webkit-touch-callout: none; -webkit-user-select: none; user-select: none; }
+/* Chosen whole: a 3px accent ring round the thing itself and the accent laid over it, in both
+   looks — what Backspace will take out, seen before it goes. */
+.m-page .note-rich .nf-attachment:is([data-chosen], .ProseMirror-selectednode) { position: relative; }
+.m-page .note-rich .nf-attachment:is([data-chosen], .ProseMirror-selectednode):not(.is-image):not(.is-table) > *,
+.m-page .note-rich .nf-attachment:is([data-chosen], .ProseMirror-selectednode).is-image img {
+  outline: 3px solid var(--m-accent-text);
+  outline-offset: 2px;
+  border-radius: 12px;
+}
+.m-page .note-rich .nf-attachment.is-table:is([data-chosen], .ProseMirror-selectednode) > .nf-table {
+  box-shadow: inset 0 0 0 var(--hairline) var(--m-accent-text), 0 0 0 3px var(--m-accent-text);
+}
+.m-page .note-rich .nf-attachment:is([data-chosen], .ProseMirror-selectednode)::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--m-accent-text) 24%, transparent);
+  pointer-events: none;
+}
+
+/* Room to write past the last thing in a note being written, as Notes leaves it: a tap there
+   puts the caret at the end, on a line of its own under a picture (main.tsx, around.ts). The
+   same over a picture, table or file that starts the note. */
+.m-page .note-editor[data-editable="true"] { padding-bottom: calc(96px + env(safe-area-inset-bottom)); }
+.m-page .note-editor[data-editable="true"] .note-rich:has(> .nf-p:first-child > .nf-attachment:first-child:is(.is-image, .is-doc, .is-file, .is-table, .is-table-unread)) {
+  padding-top: 24px;
+}
 
 /* A table: cells tall enough to tap into, the grid scrolling sideways when it is wider than
    the phone. Its cells are not typed in where the note is read-only. */

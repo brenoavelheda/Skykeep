@@ -129,6 +129,7 @@ function createPage() {
       const session = new NoteSession(engine, {
         saved: (guid) => host.event("host_saved", { guid }),
         error: (message) => host.event("host_error", { message }),
+        write: () => host.event("host_keyboard", {}),
         changed: () => {
           changed();
           tell();
@@ -278,6 +279,7 @@ function NotesPage({ page }: { page: Page }) {
           onStatus={page.setStatus}
           onBlur={() => void session.flush()}
           found={args.guid === null ? undefined : queryWords((args.found ?? []).join(" "))}
+          writeAround
         />
       </div>
       {session.attaching && (
@@ -301,12 +303,23 @@ function NotesPage({ page }: { page: Page }) {
  * the tap that places the caret in it: while the keyboard is up a tap is for editing, and the
  * link box (the format bar's link button) edits or removes it.
  */
-function followTaps() {
+function followTaps(page: Page) {
   let editingAtDown = false;
   const inEditor = (n: EventTarget | null) => (n as Element | null)?.closest?.(".ProseMirror[contenteditable='true']") ?? null;
   const onDown = (e: Event) => {
     const ed = inEditor(e.target);
     editingAtDown = Boolean(ed && ed.contains(document.activeElement));
+  };
+  // A tap on the note that no line took — under the last thing in it, over the first, in the
+  // margin beside a picture — puts the caret where the finger is nearest, a line made to write
+  // on past an attachment that ends (or starts) the note, and the keyboard comes up.
+  const onMouseDown = (e: MouseEvent) => {
+    const target = e.target as Element | null;
+    const pane = target?.closest?.('.m-page .note-editor[data-editable="true"]');
+    if (!pane || !target || !(target === pane || target.matches(".note-rich-host, .ProseMirror"))) return;
+    if (!page.editor.current?.tapAt(e.clientX, e.clientY)) return;
+    e.preventDefault();
+    host.event("host_keyboard", {});
   };
   const onClick = (e: MouseEvent) => {
     const a = (e.target as Element | null)?.closest?.("a[href]") as HTMLAnchorElement | null;
@@ -324,18 +337,29 @@ function followTaps() {
     const d = (e as CustomEvent<PictureShown>).detail;
     host.event("host_open_attachment", { id: d.id, kind: d.drawing ? "drawing" : "image", name: d.name });
   };
-  // A right-click menu (a long press, on a phone) only where text is edited.
+  // A right-click menu (a long press, on a phone) only where text is edited. A long press on a
+  // picture, drawing, file or table in a note being written chooses it whole instead, drawn as
+  // chosen, so Backspace takes it out — a single tap still opens it. A table's cells are their
+  // own: a long press there is the cell's.
   const onMenu = (e: Event) => {
     if (e.defaultPrevented) return;
+    const att = (e.target as Element | null)?.closest?.(".nf-attachment");
+    if (att && !(e.target as Element).closest(".nf-cell-edit") && inEditor(att)) {
+      e.preventDefault();
+      if (page.editor.current?.choose(att)) host.event("host_keyboard", {});
+      return;
+    }
     const editable = (e.target as HTMLElement | null)?.closest?.("input, textarea, [contenteditable='true'], [contenteditable='plaintext-only']");
     if (!editable) e.preventDefault();
   };
   document.addEventListener("pointerdown", onDown, true);
+  document.addEventListener("mousedown", onMouseDown, true);
   document.addEventListener("click", onClick, true);
   document.addEventListener("contextmenu", onMenu);
   window.addEventListener(PICTURE_EVENT, onPicture);
   return () => {
     document.removeEventListener("pointerdown", onDown, true);
+    document.removeEventListener("mousedown", onMouseDown, true);
     document.removeEventListener("click", onClick, true);
     document.removeEventListener("contextmenu", onMenu);
     window.removeEventListener(PICTURE_EVENT, onPicture);
@@ -349,7 +373,7 @@ export function mountNotesPage(container: HTMLElement): () => void {
   document.documentElement.dataset.app = "notes";
   const page = createPage();
   window.skykeepNotes = page.api;
-  const stopTaps = followTaps();
+  const stopTaps = followTaps(page);
   // Hidden or closed: what is typed is saved now, as the desktop does on blur and pagehide.
   const saveNow = () => {
     const o = page.current();

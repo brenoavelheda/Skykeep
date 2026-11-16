@@ -5,6 +5,7 @@ import android.graphics.BitmapFactory
 import android.graphics.Canvas
 import android.graphics.Paint
 import android.content.res.Configuration
+import android.os.ParcelFileDescriptor
 import android.view.View
 import android.view.ViewGroup
 import android.webkit.WebView
@@ -33,6 +34,8 @@ import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicReference
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
+import org.json.JSONArray
+import org.json.JSONObject
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
@@ -64,6 +67,9 @@ class NoteWebEditorTest {
   /** The engine with one note: what the page reads and what it saves, and nothing else. */
   private class FakeEngine(note: String, runs: String) {
     @Volatile var body: String = note
+    @Volatile var runs: String = runs
+    /** The attachments opened by a tap, as the host was told. */
+    val opened = CopyOnWriteArrayList<String>()
     val saves = CopyOnWriteArrayList<Save>()
     val unlocks = CopyOnWriteArrayList<String?>()
     var picture: ByteArray = ByteArray(0)
@@ -85,12 +91,14 @@ class NoteWebEditorTest {
           "hashCode" -> System.identityHashCode(proxy)
           "toString" -> "FakeEngine"
           "noteBody" -> body
-          "noteRunsJson" -> runs
+          "noteRunsJson" -> this.runs
           "noteSaveFormatted" -> {
             saves += Save(list[0] as String, list[1] as String, list[2] as String?, list[3] as String?, list[4] as String?)
             body = list[1] as String
+            (list[3] as String?)?.let { this.runs = it }
             Unit
           }
+          "noteAttachFileJson" -> attached(list[2].toString().toInt(), list[3] as String?)
           "noteCreate" -> {
             body = list[1] as String
             "NEW-1"
@@ -102,12 +110,52 @@ class NoteWebEditorTest {
           "noteLockHint" -> null
           "noteLockForget" -> Unit
           "noteTableJson" -> null
-          "noteAttachmentInfoJson" -> attachmentInfo
+          "noteAttachmentInfoJson" -> attachmentInfo.replace("\"A-1\"", JSONObject.quote(list[0] as String))
           "noteMedia" -> picture
           "close" -> Unit
           else -> fallback(method.returnType)
         }
       } as AccountInterface
+    }
+
+    /**
+     * A file added as the engine adds one (ckdocument insert_attachment_placed): on a line of
+     * its own, a newline before it inside a line and after it unless it is the last character;
+     * its run of its own, every other run kept.
+     */
+    private fun attached(atOffset: Int, base: String?): String {
+      val text = base ?: body
+      var at = atOffset.coerceIn(0, text.length)
+      val inside = { p: Int -> p > 0 && text[p - 1] != '\n' }
+      if (inside(at) && text.getOrNull(at) == '\n') at += 1
+      val before = if (inside(at)) "\n" else ""
+      val after = if (at < text.length) "\n" else ""
+      val next = text.substring(0, at) + before + "\ufffc" + after + text.substring(at)
+      val offset = at + before.length
+      val laid = JSONArray()
+      var pos = 0
+      val old = JSONArray(runs)
+      for (i in 0 until old.length()) {
+        val r = old.getJSONObject(i)
+        val len = r.getInt("length")
+        val end = pos + len
+        if (at in pos until end || (at == end && i == old.length() - 1)) {
+          val head = at - pos
+          if (head + before.length > 0) laid.put(JSONObject(r.toString()).put("length", head + before.length))
+          laid.put(JSONObject().put("length", 1).put("attachment", "ATT-1"))
+          val tail = len - head + after.length
+          if (tail > 0) laid.put(JSONObject(r.toString()).put("length", tail))
+        } else {
+          laid.put(r)
+        }
+        pos = end
+      }
+      body = next
+      runs = laid.toString()
+      return JSONObject()
+        .put("attachment", "ATT-1").put("media", "ATT-1").put("uti", "public.jpeg")
+        .put("offset", offset).put("body", next).put("runs", laid)
+        .toString()
     }
 
     private fun fallback(type: Class<*>): Any? = when {
@@ -135,6 +183,7 @@ class NoteWebEditorTest {
           Text("left")
         } else {
           BackHandler { scope.launch { state.flush(); left = true } }
+          state.onOpenAttachment = { id, _, _ -> fake.opened += id }
           NoteWebEditor(fake.engine, state, guid, null, editable, locked, emptyList(), Modifier.fillMaxSize())
         }
       }
@@ -393,6 +442,223 @@ class NoteWebEditorTest {
     waitFor(text()) { it.contains("Lemon") }
     Thread.sleep(1_000)
     assertTrue("the keyboard came up on a note to read", !keyboardShown())
+  }
+
+  // ---- writing around a picture: real touches, as a finger gives them ----------------------
+
+  /** A shell command run as the test's own (`input tap`, `input text`), waited for. */
+  private fun shell(command: String) {
+    val out = InstrumentationRegistry.getInstrumentation().uiAutomation.executeShellCommand(command)
+    ParcelFileDescriptor.AutoCloseInputStream(out).use { it.readBytes() }
+  }
+
+  /** Where the page's CSS point (x, y) is on the screen, in pixels. */
+  private fun onScreen(x: Double, y: Double): Pair<Int, Int> {
+    val scale = js("window.devicePixelRatio").toDouble()
+    val at = IntArray(2)
+    InstrumentationRegistry.getInstrumentation().runOnMainSync { web().getLocationOnScreen(at) }
+    return Pair((at[0] + x * scale).toInt(), (at[1] + y * scale).toInt())
+  }
+
+  /** The box of the first element `selector` finds, in CSS pixels: left, top, right, bottom. */
+  private fun box(selector: String): DoubleArray {
+    val json = js("(() => { const r = document.querySelector(${JSONObject.quote(selector)}).getBoundingClientRect(); return [r.left, r.top, r.right, r.bottom].join(','); })()")
+    return json.trim('"').split(',').map { it.toDouble() }.toDoubleArray()
+  }
+
+  private fun tap(x: Double, y: Double) {
+    val (sx, sy) = onScreen(x, y)
+    shell("input tap $sx $sy")
+  }
+
+  /** A finger held still for most of a second: Android's long press. */
+  private fun longPress(x: Double, y: Double) {
+    val (sx, sy) = onScreen(x, y)
+    shell("input swipe $sx $sy $sx $sy 900")
+  }
+
+  private fun lineCount(): String = "document.querySelectorAll('.ProseMirror > p').length"
+
+  /** A photo the engine hands over for a picture: 1600 by 1000, as a phone's is shaped. */
+  private fun photoJpeg(): ByteArray {
+    val bitmap = Bitmap.createBitmap(1600, 1000, Bitmap.Config.ARGB_8888)
+    val canvas = Canvas(bitmap)
+    canvas.drawColor(android.graphics.Color.rgb(31, 111, 139))
+    val tile = Paint().apply { color = android.graphics.Color.rgb(230, 213, 184) }
+    for (x in 0 until 8) for (y in 0 until 5) if ((x + y) % 2 == 0) canvas.drawRect(x * 200f + 8, y * 200f + 8, x * 200f + 192, y * 200f + 192, tile)
+    return java.io.ByteArrayOutputStream().also { bitmap.compress(Bitmap.CompressFormat.JPEG, 90, it) }.toByteArray()
+  }
+
+  private val photoInfo =
+    """{"id":"A-1","uti":"public.jpeg","kind":"image","filename":"IMG_0412.jpg","width":1600,"height":1000,"size":9000,"hasPreview":false}"""
+
+  /** A note whose last thing is a picture, on a line of its own, opened and drawn. */
+  private fun pictureLast(dark: Boolean = false): String {
+    val note = "Bathroom\nThe tiles we chose:\n￼"
+    fake = FakeEngine(note, """[{"length":9},{"length":20},{"length":1,"attachment":"A-1"}]""")
+    fake.picture = photoJpeg()
+    fake.attachmentInfo = photoInfo
+    show("N-1", dark = dark)
+    waitFor("(() => { const i = document.querySelector('img.nf-image'); return Boolean(i && i.complete && i.naturalWidth > 0); })()") { it == "true" }
+    return note
+  }
+
+  /** Where the attachment runs of a save sit in its text, with their ids. */
+  private fun attachmentsIn(save: Save): List<Pair<Int, String>> {
+    val runs = JSONArray(save.runs!!)
+    val out = mutableListOf<Pair<Int, String>>()
+    var at = 0
+    for (i in 0 until runs.length()) {
+      val r = runs.getJSONObject(i)
+      if (r.has("attachment") && !r.isNull("attachment")) out += Pair(at, r.getString("attachment"))
+      at += r.getInt("length")
+    }
+    assertEquals("the runs do not cover the text", save.body.length, at)
+    return out
+  }
+
+  /** The screen as it is now, kept for the report. */
+  private fun shot(name: String) {
+    Thread.sleep(600)
+    val dir = InstrumentationRegistry.getInstrumentation().targetContext.getExternalFilesDir(null) ?: return
+    val bitmap = InstrumentationRegistry.getInstrumentation().uiAutomation.takeScreenshot() ?: return
+    File(dir, name).outputStream().use { bitmap.compress(Bitmap.CompressFormat.PNG, 100, it) }
+  }
+
+  /** 1. A tap under a picture that ends the note gives a line to type on, the keyboard up; only
+   *  what is typed on it is saved, the picture's run where it was. */
+  @Test(timeout = 180_000)
+  fun a_tap_under_a_picture_that_ends_the_note_gives_a_line_to_type_on() {
+    val note = pictureLast()
+    assertEquals("3", js(lineCount()))
+    assertTrue("the keyboard was up before the tap", waitForKeyboard(up = false))
+    val picture = box(".ProseMirror > p:last-child")
+    tap((picture[0] + picture[2]) / 2, picture[3] + 28)
+
+    waitFor(lineCount()) { it == "4" }
+    assertEquals("\"\"", js("document.querySelector('.ProseMirror > p:last-child').textContent"))
+    assertEquals("true", js("document.activeElement?.classList.contains('ProseMirror') === true"))
+    assertTrue("the keyboard did not come up", waitForKeyboard(up = true))
+    assertTrue("the picture opened", fake.opened.isEmpty())
+    shot("around-1-line-under-picture.png")
+    runBlocking { state.flush() }
+    assertTrue("saved for a line only looked at: ${fake.saves}", fake.saves.isEmpty())
+
+    shell("input text Grout")
+    waitFor(text()) { it.contains("Grout") }
+    runBlocking { state.flush() }
+    val save = fake.saves.last()
+    assertEquals("$note\nGrout", save.body)
+    assertEquals(listOf(Pair(note.length - 1, "A-1")), attachmentsIn(save))
+  }
+
+  /** 2. A file added with More > Add File: the caret is on a new line under it, the keyboard
+   *  up, and what is typed there is saved after it. */
+  @Test(timeout = 180_000)
+  fun after_a_file_is_added_the_caret_is_on_a_new_line_under_it() {
+    fake = FakeEngine("Packing\nTowels", """[{"length":14}]""")
+    fake.picture = photoJpeg()
+    fake.attachmentInfo = photoInfo
+    show("N-1")
+    waitFor(text()) { it.contains("Towels") }
+    assertTrue("the keyboard was up before the file", waitForKeyboard(up = false))
+
+    // As More > Add File hands a picked picture over (attachPicked).
+    state.attach(File(compose.activity.cacheDir, "IMG_0412.jpg").path)
+
+    waitFor(lineCount()) { it == "4" }
+    waitFor("document.activeElement?.classList.contains('ProseMirror') === true") { it == "true" }
+    assertTrue("the keyboard did not come up", waitForKeyboard(up = true))
+    shot("around-2-after-attach.png")
+    val added = fake.body
+    assertEquals("Packing\nTowels\n￼", added)
+    runBlocking { state.flush() }
+    assertTrue("saved before anything was typed: ${fake.saves}", fake.saves.isEmpty())
+
+    shell("input text Sunscreen")
+    waitFor(text()) { it.contains("Sunscreen") }
+    runBlocking { state.flush() }
+    val save = fake.saves.last()
+    assertEquals("$added\nSunscreen", save.body)
+    assertEquals(listOf(Pair(added.length - 1, "ATT-1")), attachmentsIn(save))
+  }
+
+  /** 4. A single tap opens the picture; a long press chooses it instead, ringed as chosen, and
+   *  the keyboard's delete then takes it out of the note. */
+  @Test(timeout = 180_000)
+  fun a_long_press_chooses_a_picture_and_delete_removes_it() {
+    pictureLast()
+    val picture = box("img.nf-image")
+    val x = (picture[0] + picture[2]) / 2
+    val y = (picture[1] + picture[3]) / 2
+
+    tap(x, y)
+    compose.waitUntil(10_000) { fake.opened.isNotEmpty() }
+    assertEquals(listOf("A-1"), fake.opened.toList())
+
+    longPress(x, y)
+    waitFor("document.querySelector('.nf-attachment[data-chosen]') !== null") { it == "true" }
+    Thread.sleep(800)
+    assertEquals("the long press opened it", 1, fake.opened.size)
+    assertEquals("\"rgb(122, 86, 0)\"", js("getComputedStyle(document.querySelector('[data-chosen] img')).outlineColor"))
+    assertTrue("the keyboard did not come up", waitForKeyboard(up = true))
+    shot("around-4-chosen-light.png")
+
+    watchKeys()
+    shell("input keyevent KEYCODE_DEL")
+    val gone = runCatching { waitFor("document.querySelector('img.nf-image') === null", timeoutMs = 5_000) { it == "true" } }
+    assertTrue("the picture is still there; the page saw ${keysSeen()}", gone.isSuccess)
+    runBlocking { state.flush() }
+    val save = fake.saves.last()
+    assertEquals("Bathroom\nThe tiles we chose:\n", save.body)
+    assertEquals(emptyList<Pair<Int, String>>(), attachmentsIn(save))
+  }
+
+  /** What the page saw of the keys, for a test's failure: each event, and where the caret was. */
+  private fun watchKeys() = js(
+    "window.__keys = []; ['keydown','beforeinput','input','selectionchange'].forEach(t => document.addEventListener(t, e => " +
+      "window.__keys.push(t + ':' + (e.key || e.inputType || '') + ':' + document.getSelection().anchorNode?.nodeName + '@' + document.getSelection().anchorOffset), true))",
+  )
+
+  private fun keysSeen(): String = js("JSON.stringify(window.__keys)")
+
+  /** 3. The arrow keys go from the line above to just before a picture and then just after
+   *  it; the keyboard's delete there takes it out. */
+  @Test(timeout = 180_000)
+  fun the_arrow_keys_go_past_a_picture_and_delete_after_it_removes_it() {
+    val note = "Tiles:\n\ufffc\nGrout"
+    fake = FakeEngine(note, """[{"length":7},{"length":1,"attachment":"A-1"},{"length":6}]""")
+    fake.picture = photoJpeg()
+    fake.attachmentInfo = photoInfo
+    show("N-1")
+    waitFor("(() => { const i = document.querySelector('img.nf-image'); return Boolean(i && i.complete && i.naturalWidth > 0); })()") { it == "true" }
+    // The caret at the end of "Tiles:", tapped there.
+    val words = box(".ProseMirror > p:first-child")
+    tap(words[2] - 4, (words[1] + words[3]) / 2)
+    assertTrue("the keyboard did not come up", waitForKeyboard(up = true))
+    watchKeys()
+    shell("input keyevent KEYCODE_DPAD_RIGHT")
+    shell("input keyevent KEYCODE_DPAD_RIGHT")
+    Thread.sleep(500)
+    shell("input keyevent KEYCODE_DEL")
+    val seen = runCatching { waitFor("document.querySelector('img.nf-image') === null", timeoutMs = 5_000) { it == "true" } }
+    assertTrue("the picture is still there; the page saw ${keysSeen()}", seen.isSuccess)
+    runBlocking { state.flush() }
+    val save = fake.saves.last()
+    assertEquals("Tiles:\n\nGrout", save.body)
+    assertEquals(emptyList<Pair<Int, String>>(), attachmentsIn(save))
+  }
+
+  /** 4, in the dark look: the chosen picture is ringed in the dark accent, as clearly. */
+  @Test(timeout = 180_000)
+  fun a_chosen_picture_is_ringed_in_the_dark_look_too() {
+    pictureLast(dark = true)
+    val picture = box("img.nf-image")
+    longPress((picture[0] + picture[2]) / 2, (picture[1] + picture[3]) / 2)
+    waitFor("document.querySelector('.nf-attachment[data-chosen]') !== null") { it == "true" }
+    assertEquals("\"rgb(242, 179, 61)\"", js("getComputedStyle(document.querySelector('[data-chosen] img')).outlineColor"))
+    assertTrue("the long press opened it", fake.opened.isEmpty())
+    shot("around-4-chosen-dark.png")
   }
 
   /** Whether the phone's keyboard is up over the page. */

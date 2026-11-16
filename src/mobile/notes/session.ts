@@ -36,6 +36,9 @@ export type SessionEditor = {
   caret: () => number | null;
   /** Whether a caret was placed in the note at all: without one, a file goes in at its end. */
   caretPlaced: () => boolean;
+  /** The caret put on the line under attachment `id`, the editor focused; false when it is
+   *  not in the note. */
+  writeAfter: (id: string) => boolean;
 };
 
 export type SessionEvents = {
@@ -44,6 +47,8 @@ export type SessionEvents = {
   error: (message: string) => void;
   /** Something the page draws from changed: state, dirty, attaching. */
   changed: () => void;
+  /** The caret was put where the person writes next: the keyboard is wanted. */
+  write: () => void;
 };
 
 /** A pause in typing this long and the note is saved (the desktop's). */
@@ -198,8 +203,9 @@ export class NoteSession {
     const at = this.editor?.caretPlaced() === true ? (this.editor.caret() ?? text?.length ?? 0) : (text?.length ?? 0);
     this.attaching = true;
     this.events.changed();
+    let added: string | null = null;
     try {
-      await this.host.attach(guid, path, at, text);
+      added = (await this.host.attach(guid, path, at, text)).attachment;
       // The note as Apple now holds it, file in place: the editor waited, so it is taken whole.
       const read = await this.read(guid);
       if (read.text !== null) {
@@ -214,6 +220,8 @@ export class NoteSession {
       this.attaching = false;
       this.events.changed();
     }
+    // Writing goes on under the file just added, as in Notes: on a new line below it.
+    if (added !== null && !this.closed && this.editor?.writeAfter(added)) this.events.write();
   }
 
   /** Left: what is typed sent, and nothing more taken in. */

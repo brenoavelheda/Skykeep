@@ -65,6 +65,10 @@ class NoteEditorState {
   /** Something the person should know, in the page's own words. */
   internal var onError: (message: String) -> Unit = {}
 
+  /** The page put the caret where the person writes next (a tap under a picture, a file just
+   *  added, a long press choosing one): the WebView takes the focus and the keyboard comes up. */
+  internal var onKeyboard: () -> Unit = {}
+
   /** The flushes asked for and not yet answered by the page, by token. */
   private val flushing = mutableMapOf<Long, CompletableDeferred<Unit>>()
   private var nextToken = 0L
@@ -149,6 +153,7 @@ class NoteEditorState {
         synchronized(this) { flushing.remove(token) }?.complete(Unit)
       }
       "host_error" -> args.text("message")?.let(onError)
+      "host_keyboard" -> onKeyboard()
       "host_open_link" -> args.text("href")?.let(onOpenLink)
       "host_open_attachment" -> onOpenAttachment(
         args.text("id").orEmpty(),

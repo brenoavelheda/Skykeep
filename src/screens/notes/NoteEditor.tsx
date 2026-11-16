@@ -10,6 +10,7 @@ import type { Run } from "./Formatted";
 import { checklistMove, fromDoc, listNumbers, LIST_STYLES, schema, STYLE, tableCells, toDoc } from "./rich";
 import { MOVE_CHECKED_KEY } from "./model";
 import { foundRanges } from "./found";
+import { aroundPlugins, carrySpare, chooseAttachment, keptDoc, keptPos, spareAt, spareKey, tapAt, writeAfter, writeAtEdge } from "./around";
 
 function moveCheckedOn(): boolean {
   try {
@@ -503,6 +504,17 @@ export type EditorHandle = {
   redo: () => void;
   /** Whether there is anything to undo or to redo. */
   history: () => { canUndo: boolean; canRedo: boolean };
+  /**
+   * The phone's (with `writeAround`): the caret put where the person writes next, the editor
+   * focused. At the note's end or start, a line to write on made past an attachment there
+   * (around.ts); under attachment `id`, a file just added; where a tap beside or under the lines
+   * fell; or attachment `dom` chosen whole, as a long press chooses it. False when there was
+   * nothing to do.
+   */
+  writeAt: (edge: "start" | "end") => boolean;
+  writeAfter: (id: string) => boolean;
+  tapAt: (x: number, y: number) => boolean;
+  choose: (dom: Element) => boolean;
 };
 
 type Props = {
@@ -517,6 +529,9 @@ type Props = {
   onBlur?: () => void;
   /** The words of the search the note was opened from, marked where they fall (found.ts). */
   found?: string[];
+  /** The phone's: the caret goes round attachments, and lines to write on are made past them
+   *  (around.ts). Off on the desktop. */
+  writeAround?: boolean;
 };
 
 /** Every paragraph the selection touches, with where it starts. */
@@ -799,7 +814,7 @@ function statusOf(state: EditorState): EditorStatus {
  * back as Apple's text and runs on every change.
  */
 export const NoteEditor = forwardRef<EditorHandle, Props>(function NoteEditor(
-  { text, runs, editable, label, placeholder, autoFocus, onChange, onStatus, onBlur, found: words },
+  { text, runs, editable, label, placeholder, autoFocus, onChange, onStatus, onBlur, found: words, writeAround },
   ref,
 ) {
   const host = useRef<HTMLDivElement | null>(null);
@@ -833,6 +848,9 @@ export const NoteEditor = forwardRef<EditorHandle, Props>(function NoteEditor(
   const held = useRef<{ marks: Mark[]; at: number } | null>(null);
   /** Whether a caret was placed in the note (a tap, a key), as against none at all. */
   const placed = useRef(false);
+  /** The caret was put for writing while the note could not be typed in (a file going in): the
+   *  editor takes the focus as soon as it can be. */
+  const focusWhenEditable = useRef(false);
   /** Holds `marks` for what is typed next on the caret's line; nothing held clears it. */
   const holdMarks = (marks: readonly Mark[] | null) => {
     const v = view.current;
@@ -885,7 +903,7 @@ export const NoteEditor = forwardRef<EditorHandle, Props>(function NoteEditor(
     }
     const v = view.current;
     if (!v) return;
-    const out = fromDoc(v.state.doc);
+    const out = fromDoc(keptDoc(v.state));
     callbacks.current.onChange(out.text, out.runs);
   };
   const reportSoon = () => {
@@ -903,6 +921,7 @@ export const NoteEditor = forwardRef<EditorHandle, Props>(function NoteEditor(
       plugins: [
         selectionFirst,
         letTabOut,
+        ...(writeAround ? aroundPlugins : []),
         autolink,
         numbered,
         found,
@@ -997,7 +1016,8 @@ export const NoteEditor = forwardRef<EditorHandle, Props>(function NoteEditor(
         // Only a change to what the note holds is an edit. A step that leaves the document as
         // it was — text dragged and dropped where it lay, a mark set where it already is —
         // is not, and must never become a save.
-        if (tr.docChanged && !next.doc.eq(before.doc)) reportSoon();
+        // A line made to write on is not one until it is written on (around.ts).
+        if (tr.docChanged && !keptDoc(next).eq(keptDoc(before))) reportSoon();
         tell(next);
       },
       // A paste never brings an attachment's reference: Apple keeps each table or picture in
@@ -1113,7 +1133,12 @@ export const NoteEditor = forwardRef<EditorHandle, Props>(function NoteEditor(
   }, []);
 
   useEffect(() => {
-    view.current?.setProps({ editable: () => editable });
+    const v = view.current;
+    v?.setProps({ editable: () => editable });
+    if (v && editable && focusWhenEditable.current) {
+      focusWhenEditable.current = false;
+      v.focus();
+    }
   }, [editable]);
 
   // The search's words, marked; a new search marks its own, and leaving it clears them.
@@ -1210,7 +1235,13 @@ export const NoteEditor = forwardRef<EditorHandle, Props>(function NoteEditor(
         report();
         return;
       }
-      const doc = toDoc(nextText, nextRuns);
+      let doc = toDoc(nextText, nextRuns);
+      // A line made to write on and not yet written on is not Apple's to take away: it stays
+      // where it was, unless the change is right there.
+      const live = spareAt(v.state) !== null;
+      if (live && doc.eq(keptDoc(v.state))) return;
+      const spare = live ? carrySpare(v.state, doc) : null;
+      if (spare) doc = spare.doc;
       const was = v.state.doc;
       if (doc.eq(was)) return;
       // What is on screen and stays still: the caret's line when it is in view, or else the
@@ -1244,6 +1275,7 @@ export const NoteEditor = forwardRef<EditorHandle, Props>(function NoteEditor(
         tr.setSelection(TextSelection.between(near(from), near(to)));
       }
       tr.setMeta("addToHistory", false);
+      if (live) tr.setMeta(spareKey, spare ? spare.at : null);
       // Taken in quietly: what Apple holds is not an edit to send back.
       const keepHeld = held.current;
       if (keepHeld) {
@@ -1263,13 +1295,13 @@ export const NoteEditor = forwardRef<EditorHandle, Props>(function NoteEditor(
     flushChange: () => {
       if (later.current !== null) report();
     },
-    current: () => (view.current ? fromDoc(view.current.state.doc) : null),
+    current: () => (view.current ? fromDoc(keptDoc(view.current.state)) : null),
     caretPlaced: () => placed.current,
     caret: () => {
       const v = view.current;
       if (!v) return null;
       // The text up to the cursor, read the way the whole note is read, is how far in it is.
-      return fromDoc(v.state.doc.cut(0, v.state.selection.head)).text.length;
+      return fromDoc(keptDoc(v.state).cut(0, keptPos(v.state, v.state.selection.head))).text.length;
     },
     undo: () => {
       const v = view.current;
@@ -1283,7 +1315,24 @@ export const NoteEditor = forwardRef<EditorHandle, Props>(function NoteEditor(
       const v = view.current;
       return { canUndo: v ? undoDepth(v.state) > 0 : false, canRedo: v ? redoDepth(v.state) > 0 : false };
     },
+    writeAt: (edge) => writeWith((v) => writeAtEdge(v, edge)),
+    writeAfter: (id) => writeWith((v) => writeAfter(v, id)),
+    tapAt: (x, y) => writeWith((v) => tapAt(v, x, y)),
+    choose: (dom) => writeWith((v) => chooseAttachment(v, dom)),
   }));
+
+  /** The caret put for writing (writeAt and the rest): the editor focused, now or once it can be. */
+  const writeWith = (make: (v: EditorView) => Transaction | null): boolean => {
+    const v = view.current;
+    if (!v) return false;
+    const tr = make(v);
+    if (!tr) return false;
+    placed.current = true;
+    v.dispatch(tr);
+    if (v.editable) v.focus();
+    else focusWhenEditable.current = true;
+    return true;
+  };
 
   const [cellMenu, setCellMenu] = useState<CellMenu | null>(null);
   useEffect(() => {

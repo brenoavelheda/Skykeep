@@ -53,6 +53,7 @@ function fakeEditor(): SessionEditor & {
   shown: { text: string; runs: Run[] } | null;
   caretAt: number | null;
   placed: boolean;
+  wroteAfter: string[];
 } {
   const e = {
     replaced: [] as { text: string; runs: Run[] | null }[],
@@ -67,11 +68,16 @@ function fakeEditor(): SessionEditor & {
     current: () => e.shown,
     caret: () => e.caretAt,
     caretPlaced: () => e.placed,
+    wroteAfter: [] as string[],
+    writeAfter(id: string) {
+      e.wroteAfter.push(id);
+      return true;
+    },
   };
   return e;
 }
 
-const events = () => ({ saved: vi.fn(), error: vi.fn(), changed: vi.fn() });
+const events = () => ({ saved: vi.fn(), error: vi.fn(), changed: vi.fn(), write: vi.fn() });
 
 beforeEach(() => vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] }));
 afterEach(() => vi.useRealTimers());
@@ -274,6 +280,8 @@ describe("note session", () => {
     });
     await adding;
     expect(ed.replaced[ed.replaced.length - 1]?.text).toBe("Title\nBody\n\ufffc\n");
+    // Writing goes on under it: the caret on the line below, the keyboard asked for.
+    expect(ed.wroteAfter).toEqual(["A-1"]);
   });
 
   it("a file added at a caret the person placed goes in there", async () => {
