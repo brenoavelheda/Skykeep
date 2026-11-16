@@ -679,9 +679,7 @@ unsafe extern "system" fn on_fetch_data(
         rt.spawn(async move { fetch_data(remote.as_ref(), req, offset, len).await });
     });
     if caught.is_err() {
-        crate::note(&format!(
-            "a file request failed inside Skykeep; it is answered as failed"
-        ));
+        crate::note("a file request failed inside Skykeep; it is answered as failed");
     }
 }
 
@@ -864,9 +862,7 @@ unsafe extern "system" fn on_fetch_placeholders(
         rt.spawn(async move { fetch_placeholders(remote.as_ref(), store.as_ref(), req).await });
     });
     if caught.is_err() {
-        crate::note(&format!(
-            "a folder request failed inside Skykeep; it is answered as failed"
-        ));
+        crate::note("a folder request failed inside Skykeep; it is answered as failed");
     }
 }
 
@@ -955,7 +951,7 @@ fn send(req: &Request, made: &[Placeholder], total: i64, last: bool, folder: &st
     }
     if last {
         if let Err(e) = transfer_placeholders(req, &mut [], total, true, STATUS_SUCCESS) {
-            crate::note_about(&format!("a folder could not be marked whole: {e}"), &folder);
+            crate::note_about(&format!("a folder could not be marked whole: {e}"), folder);
         }
     }
 }
