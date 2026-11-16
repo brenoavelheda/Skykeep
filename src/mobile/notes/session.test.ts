@@ -201,6 +201,81 @@ describe("note session", () => {
     expect(s.initial).toEqual({ text: "😀 bold\n", runs });
   });
 
+  it("a picture deleted, saved, then put back by Undo is saved with it again", async () => {
+    // A title, a first line, the picture on a line of its own (one object character), a last
+    // line: the picture's run carries the attachment's id, as the engine keeps it.
+    const picture = "A-1";
+    const text = "Fix check\nfirst\n\ufffc\nlast\n";
+    const runs = [run(10, { style: 0 }), run(6), run(1, { attachment: picture }), run(1), run(5)];
+    const host = fakeHost({ text, runs });
+    const s = new NoteSession(host.h, { saved: vi.fn(), error: vi.fn(), changed: vi.fn(), write: vi.fn() }, { guid: "N1", folderGuid: null });
+    s.editor = fakeEditor();
+    await s.load();
+
+    // Backspace on the chosen picture: its character goes, its line left empty — and that
+    // save lands in Apple.
+    const deleted = "Fix check\nfirst\n\nlast\n";
+    const without = [run(10, { style: 0 }), run(6), run(1), run(5)];
+    s.type(deleted, without);
+    void s.flush();
+    await tick();
+    expect(host.saves[0].args).toEqual(["N1", deleted, text, without, runs]);
+    host.saves[0].answer.resolve(deleted);
+    await tick();
+    expect(s.body).toBe(deleted);
+
+    // Undo, a moment later: the picture is on screen again, so the save after it carries its
+    // run again — against the text and formatting Apple holds now, never as text alone.
+    s.type(text, runs);
+    void s.flush();
+    await tick();
+    expect(host.saves).toHaveLength(2);
+    expect(host.saves[1].args).toEqual(["N1", text, deleted, runs, without]);
+    host.saves[1].answer.resolve(text);
+    await tick();
+    expect(s.body).toBe(text);
+    expect(s.dirty).toBe(false);
+  });
+
+  it("typing after Undo saves the picture with the typing, and Redo saves it gone", async () => {
+    const picture = "A-1";
+    const text = "Fix check\nfirst\n\ufffc\nlast\n";
+    const runs = [run(10, { style: 0 }), run(6), run(1, { attachment: picture }), run(1), run(5)];
+    const host = fakeHost({ text, runs });
+    const s = new NoteSession(host.h, { saved: vi.fn(), error: vi.fn(), changed: vi.fn(), write: vi.fn() }, { guid: "N1", folderGuid: null });
+    s.editor = fakeEditor();
+    await s.load();
+    const deleted = "Fix check\nfirst\n\nlast\n";
+    const without = [run(10, { style: 0 }), run(6), run(1), run(5)];
+    s.type(deleted, without);
+    void s.flush();
+    await tick();
+    host.saves[0].answer.resolve(deleted);
+    await tick();
+
+    // Undo and type on the last line at once: one save, the picture and the words.
+    const typed = "Fix check\nfirst\n\ufffc\nlast!!\n";
+    const typedRuns = [run(10, { style: 0 }), run(6), run(1, { attachment: picture }), run(1), run(7)];
+    s.type(typed, typedRuns);
+    void s.flush();
+    await tick();
+    expect(host.saves[1].args).toEqual(["N1", typed, deleted, typedRuns, without]);
+    host.saves[1].answer.resolve(typed);
+    await tick();
+
+    // Redo: the picture out again, saved over the note that holds it.
+    s.type("Fix check\nfirst\n\nlast!!\n", [run(10, { style: 0 }), run(6), run(1), run(7)]);
+    void s.flush();
+    await tick();
+    expect(host.saves[2].args).toEqual([
+      "N1",
+      "Fix check\nfirst\n\nlast!!\n",
+      typed,
+      [run(10, { style: 0 }), run(6), run(1), run(7)],
+      typedRuns,
+    ]);
+  });
+
   it("a failed save goes back in line and is sent on the next flush", async () => {
     const host = fakeHost({ text: "Draft", runs: [run(5)] });
     const ev = events();

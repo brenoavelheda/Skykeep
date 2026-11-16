@@ -203,6 +203,48 @@ pub async fn info(
     })
 }
 
+/// The type identifier of an attachment Apple still holds for `note`, ready to be put back
+/// where it was — the record a save that restores one (an Undo of a delete) refers to again.
+/// `None` when Apple holds none: the record gone, marked deleted, or another note's. Nothing
+/// is written on a `None`: a note referring to an attachment that is not there is what made
+/// Notes on a phone lag and crash.
+pub async fn restorable(
+    http: &reqwest::Client,
+    ckdatabasews_root: &str,
+    params: Vec<(String, String)>,
+    note: &str,
+    id: &str,
+) -> Result<Option<String>> {
+    let client = ZoneClient::new(http, ckdatabasews_root, CONTAINER, params);
+    let Some(record) = client.lookup_record(ZONE, id).await? else {
+        return Ok(None);
+    };
+    if record
+        .pointer("/fields/Deleted/value")
+        .and_then(Value::as_i64)
+        .unwrap_or(0)
+        != 0
+    {
+        return Ok(None);
+    }
+    if record
+        .pointer("/fields/Note/value/recordName")
+        .and_then(Value::as_str)
+        != Some(note)
+    {
+        return Ok(None);
+    }
+    let uti = decoded(&record, "UTIEncrypted")
+        .or_else(|| {
+            record
+                .pointer("/fields/UTI/value")
+                .and_then(Value::as_str)
+                .map(str::to_string)
+        })
+        .unwrap_or_default();
+    Ok((!uti.is_empty()).then_some(uti))
+}
+
 /// A tag or mention, with the words it shows as its title. Notes keeps those words as the
 /// attachment's alt text, cased as typed, and a tag's normalised name as its token (upper
 /// case, no `#`); either is read, plain or in its `…Encrypted` form.

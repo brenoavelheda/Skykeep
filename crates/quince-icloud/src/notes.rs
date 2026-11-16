@@ -134,6 +134,12 @@ fn note_from_record(record: &Value) -> Option<Note> {
 const ATTACHMENTS_UNSOUND: &str =
     "Skykeep didn’t save this: it would have left a table or attachment in this note referenced twice, which Notes on iPhone can’t open. Nothing was changed.";
 
+/// Said when a save asks for an attachment back that Apple no longer holds — an Undo of a
+/// delete whose record went with it. Nothing is sent: the page is told, rather than left
+/// showing a picture that is not there.
+const ATTACHMENT_GONE: &str =
+    "Skykeep didn’t save this: the attachment Undo put back is no longer in iCloud, so Notes can’t show it. Nothing was changed.";
+
 pub async fn sync_cloudkit(
     http: &reqwest::Client,
     ckdatabasews_root: &str,
@@ -598,7 +604,7 @@ pub async fn edit_rich_cloudkit_from(
     runs: Option<&[crate::ckdocument::Run]>,
     base_runs: Option<&[crate::ckdocument::Run]>,
 ) -> Result<String> {
-    let client = ZoneClient::new(http, ckdatabasews_root, CONTAINER, params);
+    let client = ZoneClient::new(http, ckdatabasews_root, CONTAINER, params.clone());
     for _ in 0..3 {
         let current = client
             .lookup_record(ZONE, &note.guid)
@@ -622,8 +628,29 @@ pub async fn edit_rich_cloudkit_from(
                     .into(),
             )
         })?;
+        // A picture Undo put back after the delete's save had gone: Apple no longer refers to
+        // it, so its own record says whether it can be put back — one Apple still holds for
+        // this note, with the type it is. Gone (deleted on a phone, its save with it), nothing
+        // is written: the page is told, never left showing a picture that is not there.
+        let mut restoring: Vec<(String, String)> = Vec::new();
+        for id in runs.map_or_else(Vec::new, |runs| {
+            crate::ckdocument::attachments_not_held_in_base64(encoded, runs)
+        }) {
+            match crate::note_media::restorable(
+                http,
+                ckdatabasews_root,
+                params.clone(),
+                &note.guid,
+                &id,
+            )
+            .await?
+            {
+                Some(uti) => restoring.push((id, uti)),
+                None => return Err(Error::Refused(ATTACHMENT_GONE.into())),
+            }
+        }
         let Some((target, rewritten)) =
-            rewrite_for_save(encoded, &theirs, base, body, runs, base_runs)?
+            rewrite_for_save(encoded, &theirs, base, body, runs, base_runs, &restoring)?
         else {
             // Apple already holds this text, set this way: nothing to write. A save that only
             // re-reads the note (it was opened, looked at) must never become a write.
@@ -684,7 +711,10 @@ pub async fn edit_rich_cloudkit_from(
 /// own runs, carried over the text edit as a text-only edit carries them, already describe the
 /// formatting wanted, only the text is rewritten and every other run keeps Apple's bytes —
 /// how the runs happen to be cut (Apple's come in pieces, the editor's merged) never turns into
-/// a rewrite. Only a real restyle writes runs.
+/// a rewrite. Only a real restyle writes runs. `restoring` are the attachments the save puts
+/// back where their characters stand (an Undo of a delete), each one a record Apple still
+/// holds: id and type identifier. Without them the character would be written with nothing
+/// behind it and the picture would be gone.
 fn rewrite_for_save(
     encoded: &str,
     theirs: &str,
@@ -692,6 +722,7 @@ fn rewrite_for_save(
     body: &str,
     runs: Option<&[crate::ckdocument::Run]>,
     base_runs: Option<&[crate::ckdocument::Run]>,
+    restoring: &[(String, String)],
 ) -> Result<Option<(String, String)>> {
     // What is written has its lines as the phone draws them, its runs moved with them.
     let breaks = crate::ckdocument::apple_line_breaks;
@@ -751,7 +782,9 @@ fn rewrite_for_save(
             {
                 Some(doc)
             }
-            _ => crate::ckdocument::replace_rich_in_base64(encoded, &target, wanted),
+            _ => crate::ckdocument::replace_rich_restoring_in_base64(
+                encoded, &target, wanted, restoring,
+            ),
         },
     }
     .ok_or_else(|| {
@@ -761,7 +794,8 @@ fn rewrite_for_save(
         )
     })?;
     fits_inline(&rewritten)?;
-    if !crate::ckdocument::attachments_sound_in_base64(encoded, &rewritten) {
+    let restored: Vec<String> = restoring.iter().map(|(id, _)| id.clone()).collect();
+    if !crate::ckdocument::attachments_restored_sound_in_base64(encoded, &rewritten, &restored) {
         return Err(Error::Refused(ATTACHMENTS_UNSOUND.into()));
     }
     Ok(Some((target, rewritten)))
@@ -1682,12 +1716,18 @@ mod tests {
             editor.len(),
             "the fixture's runs come in pieces"
         );
-        assert!(
-            rewrite_for_save(&doc, &text, Some(&text), &text, Some(&editor), Some(&apple))
-                .unwrap()
-                .is_none()
-        );
-        assert!(rewrite_for_save(&doc, &text, None, &text, None, None)
+        assert!(rewrite_for_save(
+            &doc,
+            &text,
+            Some(&text),
+            &text,
+            Some(&editor),
+            Some(&apple),
+            &[]
+        )
+        .unwrap()
+        .is_none());
+        assert!(rewrite_for_save(&doc, &text, None, &text, None, None, &[])
             .unwrap()
             .is_none());
     }
@@ -1703,10 +1743,17 @@ mod tests {
         let at = text.find("out ").unwrap() + 3;
         let typed = format!("{}!{}", &text[..at], &text[at..]);
         let mine = crate::ckdocument::carry_runs(&text, &editor, &typed);
-        let (kept, written) =
-            rewrite_for_save(&doc, &text, Some(&text), &typed, Some(&mine), Some(&apple))
-                .unwrap()
-                .expect("an edit is written");
+        let (kept, written) = rewrite_for_save(
+            &doc,
+            &text,
+            Some(&text),
+            &typed,
+            Some(&mine),
+            Some(&apple),
+            &[],
+        )
+        .unwrap()
+        .expect("an edit is written");
         assert_eq!(kept, typed);
         let raw = |d: &str| {
             use base64::Engine;
@@ -1863,6 +1910,7 @@ mod tests {
             &typed.replace("\r\n", "\r\r"),
             Some(&mine),
             Some(&runs),
+            &[],
         )
         .unwrap()
         .expect("an edit is written");
@@ -1893,7 +1941,7 @@ mod tests {
         let mut runs_crlf = runs.clone();
         runs_crlf.push(plain(4));
         let (kept, written) =
-            rewrite_for_save(&encoded, &theirs, None, &crlf, Some(&runs_crlf), None)
+            rewrite_for_save(&encoded, &theirs, None, &crlf, Some(&runs_crlf), None, &[])
                 .unwrap()
                 .expect("written");
         assert_eq!(kept, format!("{shown}x\ny"));
@@ -2006,6 +2054,7 @@ mod tests {
             &typed,
             Some(&mine),
             Some(&apple),
+            &[],
         )
         .unwrap()
         .expect("an edit is written");
@@ -2085,6 +2134,7 @@ mod tests {
             &shown,
             Some(&restyled),
             Some(&theirs_runs),
+            &[],
         )
         .unwrap()
         .expect("a restyle is written");
@@ -2098,6 +2148,88 @@ mod tests {
             &ticked, &rewritten
         ));
         assert_eq!(rewritable(&rewritten), "ok");
+    }
+
+    /// A picture deleted on the phone and put back by Undo, after the delete's save had already
+    /// gone to Apple: the save that follows refers to the picture again — the same id, once, on
+    /// the object character of its own line, as a phone writes one — so a phone opens the note
+    /// with the picture in it. Written as text alone, the character came back with nothing
+    /// behind it and the picture was gone.
+    #[test]
+    fn an_undo_of_a_deleted_picture_puts_it_back() {
+        const ID: &str = "00000000-0000-4000-8000-0000000000A1";
+        let mut doc = crate::ckdocument::text_to_base64("Fix check\nfirst\nlast\n");
+        doc = crate::ckdocument::insert_attachment_in_base64(
+            &doc,
+            "Fix check\nfirst\n".encode_utf16().count() as u64,
+            ID,
+            "public.jpeg",
+            7,
+        )
+        .expect("placed")
+        .0;
+        let text = crate::ckdocument::shown_text_from_base64(&doc).unwrap();
+        let runs = crate::ckdocument::shown_runs_from_base64(&doc);
+        assert!(runs.iter().any(|r| r.attachment.as_deref() == Some(ID)));
+        assert_eq!(text, "Fix check\nfirst\n\u{FFFC}\nlast\n");
+
+        // The phone's Backspace on the chosen picture: its character goes, its line is left
+        // empty, and the save lands in Apple.
+        let deleted = text.replace('\u{FFFC}', "");
+        let deleted_runs = crate::ckdocument::carry_runs(&text, &runs, &deleted);
+        let (kept, deleted_doc) = rewrite_for_save(
+            &doc,
+            &text,
+            Some(&text),
+            &deleted,
+            Some(&deleted_runs),
+            Some(&runs),
+            &[],
+        )
+        .unwrap()
+        .expect("the delete is written");
+        assert_eq!(kept, deleted);
+        assert!(crate::ckdocument::runs_from_base64(&deleted_doc)
+            .iter()
+            .all(|r| r.attachment.is_none()));
+
+        // Undo, a moment later: the picture back where it stood. The save is made over the
+        // text Apple holds now, which no longer refers to it; the record it refers to again is
+        // one Apple still holds (`note_media::restorable`).
+        let (kept, restored) = rewrite_for_save(
+            &deleted_doc,
+            &deleted,
+            Some(&deleted),
+            &text,
+            Some(&runs),
+            Some(&deleted_runs),
+            &[(ID.to_string(), "public.jpeg".to_string())],
+        )
+        .unwrap()
+        .expect("the undo is written");
+        assert_eq!(kept, text);
+        let back = crate::ckdocument::runs_from_base64(&restored);
+        let at = back
+            .iter()
+            .position(|r| r.attachment.is_some())
+            .expect("the picture is referred to again");
+        assert_eq!(back[at].attachment.as_deref(), Some(ID));
+        assert_eq!(back[at].length, 1);
+        assert_eq!(
+            back.iter().filter(|r| r.attachment.is_some()).count(),
+            1,
+            "one place, once"
+        );
+        assert!(crate::ckdocument::attachments_restored_sound_in_base64(
+            &deleted_doc,
+            &restored,
+            &[ID.to_string()]
+        ));
+        // The note its text says it is still what the editor shows.
+        assert_eq!(
+            crate::ckdocument::stored_text_from_base64(&restored).as_deref(),
+            Some(text.as_str())
+        );
     }
 
     /// A locked note is never offered for editing: its text is sealed, and nothing here
@@ -2141,10 +2273,17 @@ mod tests {
                 },
             ],
         );
-        let (_, written) =
-            rewrite_for_save(&doc, &text, Some(&text), &text, Some(&mine), Some(&apple))
-                .unwrap()
-                .expect("a restyle is written");
+        let (_, written) = rewrite_for_save(
+            &doc,
+            &text,
+            Some(&text),
+            &text,
+            Some(&mine),
+            Some(&apple),
+            &[],
+        )
+        .unwrap()
+        .expect("a restyle is written");
         let read = crate::ckdocument::runs_from_base64(&written);
         assert_eq!(read[0].style, Some(0));
         assert!(same_formatting(&text, &read, &mine));
@@ -2856,6 +2995,200 @@ mod write_tests {
         .await
         .unwrap();
         assert_eq!(sent(&server).await["recordChangeTag"], "fresh");
+    }
+
+    /// The picture the tests below delete, undo and leave deleted.
+    const PICTURE: &str = "00000000-0000-4000-8000-0000000000A1";
+
+    /// A note holding one picture on a line of its own, as Apple keeps one.
+    fn picture_document() -> String {
+        crate::ckdocument::insert_attachment_in_base64(
+            &document("Fix check\nfirst\nlast\n"),
+            "Fix check\nfirst\n".encode_utf16().count() as u64,
+            PICTURE,
+            "public.jpeg",
+            7,
+        )
+        .expect("placed")
+        .0
+    }
+
+    /// The type identifier Apple keeps in a record, base64 as the field carries it.
+    fn encrypted(text: &str) -> String {
+        use base64::{engine::general_purpose::STANDARD as B64, Engine};
+        B64.encode(text.as_bytes())
+    }
+
+    /// The `Attachment` record Apple keeps for a picture in `Note/1`.
+    fn attachment_record(id: &str) -> Value {
+        json!({
+            "recordName": id,
+            "recordType": "Attachment",
+            "recordChangeTag": "pic",
+            "fields": {
+                "UTIEncrypted": { "type": "ENCRYPTED_BYTES", "value": encrypted("public.jpeg") },
+                "Note": { "type": "REFERENCE", "value": { "recordName": "Note/1" } },
+                "Deleted": { "type": "INT64", "value": 0 },
+            }
+        })
+    }
+
+    /// A note whose body is `doc`, and the answers Apple gives about it: its own record, and
+    /// `attachment` — the one `PICTURE` names, or none at all.
+    async fn picture_server(doc: &str, attachment: Option<Value>) -> MockServer {
+        use wiremock::matchers::body_string_contains;
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path_regex(r".*/records/lookup$"))
+            .and(body_string_contains("Note/1"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "records": [{
+                    "recordName": "Note/1",
+                    "recordType": "Note",
+                    "recordChangeTag": "fresh",
+                    "fields": {
+                        "TextDataEncrypted": { "type": "ENCRYPTED_BYTES", "value": doc }
+                    }
+                }]
+            })))
+            .mount(&server)
+            .await;
+        let held: Vec<Value> = attachment.into_iter().collect();
+        Mock::given(method("POST"))
+            .and(path_regex(r".*/records/lookup$"))
+            .and(body_string_contains(PICTURE))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({ "records": held })))
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path_regex(r".*/records/modify$"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(json!({ "records": [{ "recordName": "Note/1" }] })),
+            )
+            .mount(&server)
+            .await;
+        server
+    }
+
+    /// Whether the note was written at all.
+    async fn wrote(server: &MockServer) -> bool {
+        server
+            .received_requests()
+            .await
+            .unwrap()
+            .iter()
+            .any(|r| r.url.path().ends_with("/records/modify"))
+    }
+
+    /// A picture deleted on the phone, its save landed in Apple, then Undo: the save that
+    /// follows refers to the picture again — the record Apple still holds, on the object
+    /// character of its own line — so the note iCloud ends up with opens with the picture in
+    /// it. Written as text alone, the character comes back with nothing behind it.
+    #[tokio::test]
+    async fn an_undo_after_the_delete_landed_puts_the_picture_back() {
+        let doc = picture_document();
+        let text = crate::ckdocument::shown_text_from_base64(&doc).unwrap();
+        let runs = crate::ckdocument::shown_runs_from_base64(&doc);
+        let deleted = text.replace('\u{FFFC}', "");
+        let deleted_runs = crate::ckdocument::carry_runs(&text, &runs, &deleted);
+        let in_apple = document(&deleted);
+        let server = picture_server(&in_apple, Some(attachment_record(PICTURE))).await;
+        let saved = edit_rich_cloudkit_from(
+            &reqwest::Client::new(),
+            &server.uri(),
+            vec![],
+            &note("Note/1"),
+            Some(&deleted),
+            &text,
+            Some(&runs),
+            Some(&deleted_runs),
+        )
+        .await
+        .unwrap();
+        assert_eq!(saved, text);
+        let written = sent(&server).await["fields"]["TextDataEncrypted"]["value"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        assert_eq!(
+            crate::ckdocument::stored_text_from_base64(&written).as_deref(),
+            Some(text.as_str())
+        );
+        let back = crate::ckdocument::runs_from_base64(&written);
+        let at = back
+            .iter()
+            .position(|r| r.attachment.is_some())
+            .expect("the picture is referred to again");
+        assert_eq!(back[at].attachment.as_deref(), Some(PICTURE));
+        assert!(crate::ckdocument::attachments_restored_sound_in_base64(
+            &in_apple,
+            &written,
+            &[PICTURE.to_string()]
+        ));
+    }
+
+    /// The same Undo when iCloud no longer holds the picture's record — deleted on a phone,
+    /// with the note's reference — writes nothing and says why, rather than leaving a
+    /// character Apple has nothing for.
+    #[tokio::test]
+    async fn an_undo_whose_picture_apple_no_longer_holds_is_refused() {
+        let doc = picture_document();
+        let text = crate::ckdocument::shown_text_from_base64(&doc).unwrap();
+        let runs = crate::ckdocument::shown_runs_from_base64(&doc);
+        let deleted = text.replace('\u{FFFC}', "");
+        let deleted_runs = crate::ckdocument::carry_runs(&text, &runs, &deleted);
+        let server = picture_server(&document(&deleted), None).await;
+        let refused = edit_rich_cloudkit_from(
+            &reqwest::Client::new(),
+            &server.uri(),
+            vec![],
+            &note("Note/1"),
+            Some(&deleted),
+            &text,
+            Some(&runs),
+            Some(&deleted_runs),
+        )
+        .await
+        .unwrap_err();
+        assert!(
+            refused.to_string().contains("no longer in iCloud"),
+            "{refused}"
+        );
+        assert!(!wrote(&server).await, "nothing was written");
+    }
+
+    /// A picture deleted and left deleted is still saved, and still removes it from the note:
+    /// nothing is put back, and its record is not even looked at.
+    #[tokio::test]
+    async fn a_delete_left_alone_still_removes_the_picture() {
+        let doc = picture_document();
+        let text = crate::ckdocument::shown_text_from_base64(&doc).unwrap();
+        let runs = crate::ckdocument::shown_runs_from_base64(&doc);
+        let deleted = text.replace('\u{FFFC}', "");
+        let deleted_runs = crate::ckdocument::carry_runs(&text, &runs, &deleted);
+        let server = picture_server(&doc, Some(attachment_record(PICTURE))).await;
+        let saved = edit_rich_cloudkit_from(
+            &reqwest::Client::new(),
+            &server.uri(),
+            vec![],
+            &note("Note/1"),
+            Some(&text),
+            &deleted,
+            Some(&deleted_runs),
+            Some(&runs),
+        )
+        .await
+        .unwrap();
+        assert_eq!(saved, deleted);
+        assert!(wrote(&server).await);
+        let written = sent(&server).await["fields"]["TextDataEncrypted"]["value"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        assert!(crate::ckdocument::runs_from_base64(&written)
+            .iter()
+            .all(|r| r.attachment.is_none()));
     }
 
     /// Apple's list shows the first line as the title and the next as the preview.
