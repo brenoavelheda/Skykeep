@@ -8,9 +8,11 @@ import android.content.res.Configuration
 import android.os.ParcelFileDescriptor
 import android.view.View
 import android.view.ViewGroup
+import android.view.WindowManager
 import android.webkit.WebView
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
+import androidx.activity.enableEdgeToEdge
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -174,6 +176,13 @@ class NoteWebEditorTest {
 
   private fun show(guid: String?, locked: Boolean = false, editable: Boolean = true, dark: Boolean = false) {
     state = NoteEditorState()
+    // As MainActivity runs: edge to edge, and the keyboard resizing (the manifest's adjustResize).
+    // Left unspecified, the system now and then pans the test's window instead: the whole page
+    // drawn 63px lower, under the status bar's inset, its foot under the keyboard.
+    compose.runOnUiThread {
+      compose.activity.enableEdgeToEdge()
+      compose.activity.window.setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE)
+    }
     compose.setContent {
       Themed(dark) {
         // As NoteScreen leaves the note: what is typed is saved, then the note is gone.
@@ -713,6 +722,18 @@ class NoteWebEditorTest {
     return keyboardTop - bottom
   }
 
+  /** Waits for the keyboard's inset to reach the page: the pane's foot at or above the
+   *  keyboard's top edge. */
+  private fun waitForPaneAboveKeyboard(timeoutMs: Long = 10_000) {
+    val end = System.currentTimeMillis() + timeoutMs
+    var clear = paneClearOfKeyboard()
+    while (clear < -2 && System.currentTimeMillis() < end) {
+      Thread.sleep(100)
+      clear = paneClearOfKeyboard()
+    }
+    assertTrue("the pane runs under the keyboard by ${-clear}px", clear >= -2)
+  }
+
   /** F4, 1. However tall the last thing is, scrolled to the end there is a clear room under it
    *  (keyboard down and up), and a tap there gives the line to type on, not the picture. */
   @Test(timeout = 240_000)
@@ -745,7 +766,7 @@ class NoteWebEditorTest {
     assertEquals("\"none\"", js("getComputedStyle(document.querySelector('.m-room-hint')).display"))
 
     // With the keyboard up, the end of the note still shows room under the line written on.
-    Thread.sleep(800)
+    waitForPaneAboveKeyboard()
     swipeToEnd()
     val line = box(".ProseMirror > p:last-child")
     val paneUp = box(".note-editor")
@@ -782,10 +803,12 @@ class NoteWebEditorTest {
     waitFor(lineCount()) { it == "4" }
     waitFor(pictureShown()) { it == "true" }
     assertTrue("the keyboard did not come up", waitForKeyboard(up = true))
-    Thread.sleep(1_500)
-    val line = box(".ProseMirror > p:last-child")
-    val pane = box(".note-editor")
-    assertTrue("the line under the picture is out of view: ${line.toList()} in ${pane.toList()}", line[1] >= pane[1] && line[3] <= pane[3])
+    waitForPaneAboveKeyboard()
+    // The page brings the line into view as the picture lands and the pane shrinks: waited for.
+    val inView = "(() => { const l = document.querySelector('.ProseMirror > p:last-child').getBoundingClientRect(); " +
+      "const p = document.querySelector('.note-editor').getBoundingClientRect(); return l.top >= p.top && l.bottom <= p.bottom; })()"
+    val seen = runCatching { waitFor(inView, timeoutMs = 10_000) { it == "true" } }
+    assertTrue("the line under the picture is out of view: ${box(".ProseMirror > p:last-child").toList()} in ${box(".note-editor").toList()}", seen.isSuccess)
     assertTrue("the pane runs under the keyboard by ${-paneClearOfKeyboard()}px", paneClearOfKeyboard() >= -2)
     shot("f4-after-adding-a-tall-picture.png")
 
