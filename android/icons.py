@@ -23,6 +23,9 @@ MAP = {  # drawable: Lucide icon
   "ic_screenshot": "scan", "ic_panorama": "rectangle-horizontal", "ic_portrait": "aperture",
   "ic_albums": "images", "ic_lock": "lock", "ic_info": "info", "ic_close": "x", "ic_undo": "rotate-ccw",
   "ic_heart_fill": "heart",
+  # The note screen: its format bar and its actions, as the desktop's Notes toolbar draws them.
+  "ic_link": "link", "ic_text_undo": "undo-2", "ic_text_redo": "redo-2", "ic_checklist": "list-checks",
+  "ic_paperclip": "paperclip", "ic_image_plus": "image-plus", "ic_lock_open": "lock-keyhole-open",
 }
 # Drawn filled as well as stroked: a favourite's heart, set apart from the outline.
 FILLED = {"ic_heart_fill"}
