@@ -661,6 +661,146 @@ class NoteWebEditorTest {
     shot("around-4-chosen-dark.png")
   }
 
+  // ---- F4: a picture taller than the screen at the end of the note ------------------------
+
+  /** A phone's long screenshot, as the engine hands one over: 1080 by 3000, drawn the note's
+   *  width wide it is taller than the screen (a 1080 by 2400 one is, under the app's bars). */
+  private fun screenshotPng(): ByteArray {
+    val bitmap = Bitmap.createBitmap(1080, 3000, Bitmap.Config.ARGB_8888)
+    val canvas = Canvas(bitmap)
+    canvas.drawColor(android.graphics.Color.rgb(31, 111, 139))
+    val band = Paint().apply { color = android.graphics.Color.rgb(230, 213, 184) }
+    for (y in 0 until 15) if (y % 2 == 0) canvas.drawRect(0f, y * 200f, 1080f, y * 200f + 200f, band)
+    return java.io.ByteArrayOutputStream().also { bitmap.compress(Bitmap.CompressFormat.PNG, 100, it) }.toByteArray()
+  }
+
+  private val screenshotInfo =
+    """{"id":"A-1","uti":"public.png","kind":"image","filename":"Screenshot.png","width":1080,"height":3000,"size":90000,"hasPreview":false}"""
+
+  private fun pictureShown(): String =
+    "(() => { const i = document.querySelector('img.nf-image'); return Boolean(i && i.complete && i.naturalWidth > 0); })()"
+
+  private fun atEnd(): String =
+    "(() => { const p = document.querySelector('.note-editor'); return p.scrollTop + p.clientHeight >= p.scrollHeight - 1; })()"
+
+  /** The note's pane scrolled to its very end by a finger, as a person does: swipes up until
+   *  the pane goes no further. */
+  private fun swipeToEnd() {
+    val pane = box(".note-editor")
+    val x = (pane[0] + pane[2]) / 2
+    val (sx, from) = onScreen(x, pane[1] + (pane[3] - pane[1]) * 0.8)
+    val (_, to) = onScreen(x, pane[1] + (pane[3] - pane[1]) * 0.2)
+    repeat(12) {
+      if (js(atEnd()) == "true") return
+      shell("input swipe $sx $from $sx $to 250")
+      Thread.sleep(500)
+    }
+    assertEquals("the pane did not reach its end", "true", js(atEnd()))
+  }
+
+  /** How far the pane's bottom edge sits above the keyboard (or the screen's foot), in pixels:
+   *  0 or more when the whole pane is in view. */
+  private fun paneClearOfKeyboard(): Int {
+    val pane = box(".note-editor")
+    val (_, bottom) = onScreen(0.0, pane[3])
+    var keyboardTop = 0
+    InstrumentationRegistry.getInstrumentation().runOnMainSync {
+      val root = compose.activity.window.decorView
+      val ime = androidx.core.view.ViewCompat.getRootWindowInsets(root)
+        ?.getInsets(androidx.core.view.WindowInsetsCompat.Type.ime())?.bottom ?: 0
+      keyboardTop = root.height - ime
+    }
+    return keyboardTop - bottom
+  }
+
+  /** F4, 1. However tall the last thing is, scrolled to the end there is a clear room under it
+   *  (keyboard down and up), and a tap there gives the line to type on, not the picture. */
+  @Test(timeout = 240_000)
+  fun a_picture_taller_than_the_screen_still_leaves_room_under_it_to_write() {
+    val note = "Screenshot\n￼"
+    fake = FakeEngine(note, """[{"length":11},{"length":1,"attachment":"A-1"}]""")
+    fake.picture = screenshotPng()
+    fake.attachmentInfo = screenshotInfo
+    show("N-1")
+    waitFor(pictureShown()) { it == "true" }
+    assertTrue("the keyboard was up before the tap", waitForKeyboard(up = false))
+    val picture0 = box("img.nf-image")
+    val pane0 = box(".note-editor")
+    assertTrue("the picture is not taller than the pane: ${picture0.toList()} in ${pane0.toList()}", picture0[3] - picture0[1] > pane0[3] - pane0[1])
+
+    swipeToEnd()
+    val picture = box("img.nf-image")
+    val pane = box(".note-editor")
+    val room = pane[3] - picture[3]
+    assertTrue("only ${room}px under the picture, keyboard down", room >= 144)
+    assertEquals("the room does not say it is there to write in", "\"block\"", js("getComputedStyle(document.querySelector('.m-room-hint')).display"))
+    shot("f4-tall-picture-end-keyboard-down.png")
+
+    tap((picture[0] + picture[2]) / 2, picture[3] + room / 2)
+    waitFor(lineCount()) { it == "3" }
+    assertEquals("\"\"", js("document.querySelector('.ProseMirror > p:last-child').textContent"))
+    assertEquals("true", js("document.activeElement?.classList.contains('ProseMirror') === true"))
+    assertTrue("the keyboard did not come up", waitForKeyboard(up = true))
+    assertTrue("the picture opened: ${fake.opened}", fake.opened.isEmpty())
+    assertEquals("\"none\"", js("getComputedStyle(document.querySelector('.m-room-hint')).display"))
+
+    // With the keyboard up, the end of the note still shows room under the line written on.
+    Thread.sleep(800)
+    swipeToEnd()
+    val line = box(".ProseMirror > p:last-child")
+    val paneUp = box(".note-editor")
+    val metrics = js("(() => { const p = document.querySelector('.note-editor'); const r = document.querySelector('.m-room').getBoundingClientRect(); return [p.scrollTop, p.clientHeight, p.scrollHeight, r.top, r.bottom, innerHeight].join(','); })()")
+    assertTrue("the line under the picture is not in view: ${line.toList()} in ${paneUp.toList()} ($metrics)", line[1] >= paneUp[1] && line[3] <= paneUp[3])
+    assertTrue("only ${paneUp[3] - line[3]}px under the line, keyboard up", paneUp[3] - line[3] >= 144)
+    assertTrue("the pane runs under the keyboard by ${-paneClearOfKeyboard()}px", paneClearOfKeyboard() >= -2)
+    shot("f4-tall-picture-end-keyboard-up.png")
+
+    runBlocking { state.flush() }
+    assertTrue("saved for a line only looked at: ${fake.saves}", fake.saves.isEmpty())
+    shell("input text Below")
+    waitFor(text()) { it.contains("Below") }
+    runBlocking { state.flush() }
+    val save = fake.saves.last()
+    assertEquals("$note\nBelow", save.body)
+    assertEquals(listOf(Pair(note.length - 1, "A-1")), attachmentsIn(save))
+  }
+
+  /** F4, 2. A picture taller than the screen just added: the line under it is in view above the
+   *  keyboard, so the person sees the caret, not the middle of the picture. */
+  @Test(timeout = 240_000)
+  fun after_a_tall_picture_is_added_the_line_under_it_is_in_view_above_the_keyboard() {
+    fake = FakeEngine("Packing\nTowels", """[{"length":14}]""")
+    fake.picture = screenshotPng()
+    fake.attachmentInfo = screenshotInfo
+    show("N-1")
+    waitFor(text()) { it.contains("Towels") }
+    assertTrue("the keyboard was up before the file", waitForKeyboard(up = false))
+
+    // As More > Add File hands a picked picture over (attachPicked).
+    state.attach(File(compose.activity.cacheDir, "Screenshot.png").path)
+
+    waitFor(lineCount()) { it == "4" }
+    waitFor(pictureShown()) { it == "true" }
+    assertTrue("the keyboard did not come up", waitForKeyboard(up = true))
+    Thread.sleep(1_500)
+    val line = box(".ProseMirror > p:last-child")
+    val pane = box(".note-editor")
+    assertTrue("the line under the picture is out of view: ${line.toList()} in ${pane.toList()}", line[1] >= pane[1] && line[3] <= pane[3])
+    assertTrue("the pane runs under the keyboard by ${-paneClearOfKeyboard()}px", paneClearOfKeyboard() >= -2)
+    shot("f4-after-adding-a-tall-picture.png")
+
+    val added = fake.body
+    assertEquals("Packing\nTowels\n￼", added)
+    runBlocking { state.flush() }
+    assertTrue("saved before anything was typed: ${fake.saves}", fake.saves.isEmpty())
+    shell("input text Sunscreen")
+    waitFor(text()) { it.contains("Sunscreen") }
+    runBlocking { state.flush() }
+    val save = fake.saves.last()
+    assertEquals("$added\nSunscreen", save.body)
+    assertEquals(listOf(Pair(added.length - 1, "ATT-1")), attachmentsIn(save))
+  }
+
   /** Whether the phone's keyboard is up over the page. */
   private fun keyboardShown(): Boolean {
     var shown = false

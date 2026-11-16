@@ -148,10 +148,40 @@ body {
   pointer-events: none;
 }
 
-/* Room to write past the last thing in a note being written, as Notes leaves it: a tap there
-   puts the caret at the end, on a line of its own under a picture (main.tsx, around.ts). The
-   same over a picture, table or file that starts the note. */
-.m-page .note-editor[data-editable="true"] { padding-bottom: calc(96px + env(safe-area-inset-bottom)); }
+/* Room to write past the last thing in a note being written, as Notes leaves it, however tall
+   that thing is: the note's lines take the height they need (never squeezed to the pane, which
+   let a picture taller than the screen run over the room under it), and under them the room is
+   a box of its own (.m-room, main.tsx) a third of the pane tall — a third of the screen with
+   the keyboard down — and never under 144px (three 48dp touch targets) with it up. A tap there
+   puts the caret at the end, on a line of its own under a picture (around.ts). The same over a
+   picture, table or file that starts the note. */
+.m-page .note-editor .note-rich-host { flex: 1 0 auto; }
+.m-page .note-editor[data-editable="true"] { padding-bottom: env(safe-area-inset-bottom); }
+.m-page .m-room {
+  flex: none;
+  height: 33%;
+  min-height: 144px;
+  padding-top: 12px;
+  cursor: text;
+}
+/* Under a note that ends in a picture, drawing, file or table — where the room alone could read
+   as the end of the page — it says it is there to write in, in the placeholder's grey; under
+   text, and once the line under the attachment is made, nothing. */
+.m-page .m-room-hint {
+  display: none;
+  color: var(--text-3);
+  font-size: 0.9375rem;
+  line-height: 1.5;
+  pointer-events: none;
+}
+/* The last line ends in the attachment: after it only the editor's own end of line (its
+   separator image, then its trailing break). */
+.m-page .note-editor:has(
+  .note-rich > .nf-p:last-child > .nf-attachment:not(.is-inline) + .ProseMirror-separator + .ProseMirror-trailingBreak:last-child,
+  .note-rich > .nf-p:last-child > .nf-attachment:not(.is-inline) + .ProseMirror-trailingBreak:last-child
+) .m-room-hint {
+  display: block;
+}
 .m-page .note-editor[data-editable="true"] .note-rich:has(> .nf-p:first-child > .nf-attachment:first-child:is(.is-image, .is-doc, .is-file, .is-table, .is-table-unread)) {
   padding-top: 24px;
 }

@@ -11,7 +11,9 @@
  * - the arrow keys go from text to just before an attachment, then just after it, and back;
  * - Backspace just after an attachment removes it, as Notes does;
  * - a tap beside, over or under the lines (the margin, the room under the note) puts the caret
- *   where the finger is nearest.
+ *   where the finger is nearest;
+ * - a caret put there for writing stays in view while the page moves under it — a picture
+ *   landing at its full height above it, the keyboard coming up — until the person scrolls.
  */
 import { NodeSelection, Plugin, PluginKey, Selection, TextSelection, type Command, type EditorState, type Transaction } from "prosemirror-state";
 import { keymap } from "prosemirror-keymap";
@@ -107,7 +109,7 @@ function makeSpare(state: EditorState, at: number): Transaction {
   const place = tr.mapping.map(at);
   tr.insert(place, schema.nodes.paragraph.create());
   tr.setSelection(TextSelection.create(tr.doc, place + 1));
-  return tr.setMeta(spareKey, place).setMeta("addToHistory", false).scrollIntoView();
+  return writing(tr.setMeta(spareKey, place).setMeta("addToHistory", false));
 }
 
 /** Whether `line` ends (or starts) with something that stands on its own: a picture, a table,
@@ -131,7 +133,7 @@ export function writeAtEdge(view: EditorView, edge: "start" | "end"): Transactio
   const linePos = edge === "end" ? doc.content.size - line.nodeSize : 0;
   if (standsAlone(view, line, linePos, edge)) return makeSpare(state, edge === "end" ? doc.content.size : 0);
   const sel = edge === "end" ? Selection.atEnd(doc) : Selection.atStart(doc);
-  return state.tr.setSelection(sel).scrollIntoView();
+  return writing(state.tr.setSelection(sel));
 }
 
 /**
@@ -149,7 +151,7 @@ export function writeAfter(view: EditorView, id: string): Transaction | null {
   });
   if (found === null) return null;
   const end = found + state.doc.nodeAt(found)!.nodeSize;
-  if (emptyLine(state.doc.nodeAt(end))) return state.tr.setSelection(TextSelection.create(state.doc, end + 1)).scrollIntoView();
+  if (emptyLine(state.doc.nodeAt(end))) return writing(state.tr.setSelection(TextSelection.create(state.doc, end + 1)));
   return makeSpare(state, end);
 }
 
@@ -174,11 +176,11 @@ export function tapAt(view: EditorView, x: number, y: number): Transaction | nul
   const box = line.getBoundingClientRect();
   if (node.childCount > 0 && [...Array(node.childCount).keys()].every((i) => isAttachment(node.child(i)))) {
     const pos = x < (box.left + box.right) / 2 ? start : start + node.content.size;
-    return view.state.tr.setSelection(TextSelection.create(view.state.doc, pos));
+    return writing(view.state.tr.setSelection(TextSelection.create(view.state.doc, pos)));
   }
   const near = view.posAtCoords({ left: Math.min(Math.max(x, box.left + 1), box.right - 1), top: y });
   if (!near) return null;
-  return view.state.tr.setSelection(TextSelection.near(view.state.doc.resolve(near.pos)));
+  return writing(view.state.tr.setSelection(TextSelection.near(view.state.doc.resolve(near.pos))));
 }
 
 /**
@@ -224,11 +226,67 @@ export function chooseAttachment(view: EditorView, dom: Element): Transaction | 
     const node = at >= 0 ? view.state.doc.nodeAt(at) : null;
     if (isAttachment(node) && view.nodeDOM(at) === dom) {
       const tr = view.state.tr.setSelection(TextSelection.create(view.state.doc, at + node!.nodeSize));
-      return tr.setMeta(chosenKey, at);
+      return writing(tr.setMeta(chosenKey, at));
     }
   }
   return null;
 }
+
+/**
+ * Whether the caret was put for writing (a tap under the note, a file just added, a long press)
+ * and is kept in view while the page moves under it. A picture comes in at its full height
+ * only once the note is drawn, and the keyboard comes up after the caret is put: either can
+ * leave the caret under the keyboard or below the screen, the person looking at the middle of
+ * a picture. The editor's own scrolling follows typing; this follows the page. It lets go when
+ * the person touches or scrolls the page themselves.
+ */
+const followKey = new PluginKey<boolean>("follow-caret");
+
+/** `tr`, a caret put for writing: scrolled into view now, and kept there (followKey). */
+function writing(tr: Transaction): Transaction {
+  return tr.setMeta(followKey, true).scrollIntoView();
+}
+
+const follow = new Plugin<boolean>({
+  key: followKey,
+  state: {
+    init: () => false,
+    apply: (tr, on) => (tr.getMeta(followKey) as boolean | undefined) ?? on,
+  },
+  props: {
+    // The caret brought into view with its whole line and a little of what is under it, not
+    // its glyph's height flush with the keyboard's edge.
+    scrollMargin: { top: 16, bottom: 32, left: 5, right: 5 },
+  },
+  view(view) {
+    const keep = () => {
+      if (followKey.getState(view.state) && view.hasFocus()) view.dispatch(view.state.tr.scrollIntoView());
+    };
+    const letGo = () => {
+      if (followKey.getState(view.state)) view.dispatch(view.state.tr.setMeta(followKey, false));
+    };
+    const win = view.dom.ownerDocument.defaultView;
+    const doc = view.dom.ownerDocument;
+    // The note growing or shrinking (a picture drawn at its size), and the page itself (the
+    // keyboard up or down: the WebView is resized above it).
+    const grown = typeof ResizeObserver === "undefined" ? null : new ResizeObserver(keep);
+    grown?.observe(view.dom);
+    win?.addEventListener("resize", keep);
+    win?.visualViewport?.addEventListener("resize", keep);
+    // A finger on the page or a wheel: the person scrolls, or taps somewhere new (a tap that
+    // puts the caret for writing comes after its touch, and follows again).
+    const hands = ["pointerdown", "touchstart", "wheel"] as const;
+    for (const h of hands) doc.addEventListener(h, letGo, { capture: true, passive: true });
+    return {
+      destroy() {
+        grown?.disconnect();
+        win?.removeEventListener("resize", keep);
+        win?.visualViewport?.removeEventListener("resize", keep);
+        for (const h of hands) doc.removeEventListener(h, letGo, { capture: true });
+      },
+    };
+  },
+});
 
 /** Arrow Right and Left beside an attachment: to just before it, then just after, never into it. */
 function across(dir: 1 | -1): Command {
@@ -276,4 +334,4 @@ const removeBefore: Command = (state, dispatch) => {
 };
 
 /** The editor's plugins for writing around attachments, ahead of its own keys. */
-export const aroundPlugins = [spareLine, chosen, keymap({ ArrowRight: across(1), ArrowLeft: across(-1), Backspace: removeBefore, Delete: removeChosen })];
+export const aroundPlugins = [spareLine, chosen, follow, keymap({ ArrowRight: across(1), ArrowLeft: across(-1), Backspace: removeBefore, Delete: removeChosen })];
