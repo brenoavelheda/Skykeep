@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { NoteSession, type NoteHost, type SessionEditor } from "./session";
 import type { Run } from "../../screens/notes/Formatted";
+import type { NoteAttached } from "../../lib/ipc";
 
 const run = (length: number, extra: Partial<Run> = {}): Run => ({
   length, style: null, indent: 0, checked: null, bold: false, italic: false, underline: false, strike: false, link: null, ...extra,
@@ -18,6 +19,7 @@ function deferred<T>(): Deferred<T> {
 function fakeHost(note: { text: string | null; runs: Run[] | "fail" }) {
   const saves: { args: [string, string, string | null, Run[] | null, Run[] | null]; answer: Deferred<string> }[] = [];
   const creates: { args: [string | null, string]; answer: Deferred<string> }[] = [];
+  const attaches: { args: [string, string, number, string | null]; answer: Deferred<NoteAttached> }[] = [];
   const reads: Deferred<string | null>[] = [];
   let live = note;
   const h: NoteHost = {
@@ -36,21 +38,35 @@ function fakeHost(note: { text: string | null; runs: Run[] | "fail" }) {
       creates.push({ args, answer });
       return answer.promise;
     },
-    attach: () => Promise.reject("not here"),
+    attach: (guid, path, atOffset, base) => {
+      const answer = deferred<NoteAttached>();
+      attaches.push({ args: [guid, path, atOffset, base], answer });
+      void answer.promise.then((done) => (live = { text: done.body, runs: live.runs }));
+      return answer.promise;
+    },
   };
-  return { h, saves, creates, reads, set: (n: typeof note) => (live = n) };
+  return { h, saves, creates, attaches, reads, set: (n: typeof note) => (live = n) };
 }
 
-function fakeEditor(): SessionEditor & { replaced: { text: string; runs: Run[] | null }[]; shown: { text: string; runs: Run[] } | null } {
+function fakeEditor(): SessionEditor & {
+  replaced: { text: string; runs: Run[] | null }[];
+  shown: { text: string; runs: Run[] } | null;
+  caretAt: number | null;
+  placed: boolean;
+} {
   const e = {
     replaced: [] as { text: string; runs: Run[] | null }[],
     shown: null as { text: string; runs: Run[] } | null,
+    /** Where the caret was put, and whether it was placed at all. */
+    caretAt: null as number | null,
+    placed: false,
     replace(text: string, runs: Run[] | null) {
       e.replaced.push({ text, runs });
     },
     flushChange() {},
     current: () => e.shown,
-    caret: () => null,
+    caret: () => e.caretAt,
+    caretPlaced: () => e.placed,
   };
   return e;
 }
@@ -237,8 +253,49 @@ describe("note session", () => {
     expect(host.saves[1].args[0]).toBe("NEW1");
   });
 
-  it("a note with no text held yet is not opened for typing", async () => {
-    const host = fakeHost({ text: null, runs: [] });
+  it("a file added with no caret placed goes in at the end of the note", async () => {
+    const host = fakeHost({ text: "Title\nBody\n", runs: [run(11)] });
+    const s = new NoteSession(host.h, events(), { guid: "N1", folderGuid: null });
+    const ed = fakeEditor();
+    ed.shown = { text: "Title\nBody\n", runs: [run(11)] };
+    // Opened and only read: no tap put the caret anywhere, so the editor answers 0 but says so.
+    ed.caretAt = 0;
+    ed.placed = false;
+    s.editor = ed;
+    await s.load();
+
+    const adding = s.attach("/cache/b.png");
+    await tick();
+    expect(host.attaches).toHaveLength(1);
+    expect(host.attaches[0].args).toEqual(["N1", "/cache/b.png", 11, "Title\nBody\n"]);
+    // The note as Apple now holds it, the file's character at its end.
+    host.attaches[0].answer.resolve({
+      attachment: "A-1", media: "A-1", uti: "public.png", offset: 11, body: "Title\nBody\n\ufffc\n",
+    });
+    await adding;
+    expect(ed.replaced[ed.replaced.length - 1]?.text).toBe("Title\nBody\n\ufffc\n");
+  });
+
+  it("a file added at a caret the person placed goes in there", async () => {
+    const host = fakeHost({ text: "Title\nBody\n", runs: [run(11)] });
+    const s = new NoteSession(host.h, events(), { guid: "N1", folderGuid: null });
+    const ed = fakeEditor();
+    ed.shown = { text: "Title\nBody\n", runs: [run(11)] };
+    ed.caretAt = 6;
+    ed.placed = true;
+    s.editor = ed;
+    await s.load();
+
+    const adding = s.attach("/cache/b.png");
+    await tick();
+    expect(host.attaches[0].args[2]).toBe(6);
+    host.attaches[0].answer.resolve({
+      attachment: "A-1", media: "A-1", uti: "public.png", offset: 6, body: "Title\n\ufffcBody\n",
+    });
+    await adding;
+  });
+
+  it("a note with no text held yet is not opened for typing", async () => {    const host = fakeHost({ text: null, runs: [] });
     const s = new NoteSession(host.h, events(), { guid: "N1", folderGuid: null });
     await s.load();
     expect(s.state).toBe("missing");

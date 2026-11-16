@@ -2,6 +2,9 @@ package io.github.yashwanthkamireddi.skykeep.ui.notes
 
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
+import android.graphics.Canvas
+import android.graphics.Paint
+import android.content.res.Configuration
 import android.view.View
 import android.view.ViewGroup
 import android.webkit.WebView
@@ -9,12 +12,15 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.material3.Text
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
@@ -61,6 +67,8 @@ class NoteWebEditorTest {
     val saves = CopyOnWriteArrayList<Save>()
     val unlocks = CopyOnWriteArrayList<String?>()
     var picture: ByteArray = ByteArray(0)
+    /** What an attachment is, as the page is told before it draws it. */
+    @Volatile var attachmentInfo: String = """{"id":"A-1","uti":"public.jpeg","kind":"image","filename":"IMG.jpg"}"""
     val engine: AccountInterface
 
     init {
@@ -94,7 +102,7 @@ class NoteWebEditorTest {
           "noteLockHint" -> null
           "noteLockForget" -> Unit
           "noteTableJson" -> null
-          "noteAttachmentInfoJson" -> """{"id":"A-1","uti":"public.jpeg","kind":"image","filename":"IMG.jpg"}"""
+          "noteAttachmentInfoJson" -> attachmentInfo
           "noteMedia" -> picture
           "close" -> Unit
           else -> fallback(method.returnType)
@@ -116,10 +124,10 @@ class NoteWebEditorTest {
     }
   }
 
-  private fun show(guid: String?, locked: Boolean = false, editable: Boolean = true) {
+  private fun show(guid: String?, locked: Boolean = false, editable: Boolean = true, dark: Boolean = false) {
     state = NoteEditorState()
     compose.setContent {
-      SkykeepTheme {
+      Themed(dark) {
         // As NoteScreen leaves the note: what is typed is saved, then the note is gone.
         var left by remember { mutableStateOf(false) }
         val scope = rememberCoroutineScope()
@@ -132,6 +140,19 @@ class NoteWebEditorTest {
       }
     }
     compose.waitUntil(30_000) { state.ready.value }
+  }
+
+  /** The app's theme, light or dark as asked, whatever the emulator is set to. */
+  @Composable
+  private fun Themed(dark: Boolean, content: @Composable () -> Unit) {
+    val base = LocalConfiguration.current
+    val config = Configuration(base).apply {
+      uiMode = (uiMode and Configuration.UI_MODE_NIGHT_MASK.inv()) or
+        (if (dark) Configuration.UI_MODE_NIGHT_YES else Configuration.UI_MODE_NIGHT_NO)
+    }
+    CompositionLocalProvider(LocalConfiguration provides config) {
+      SkykeepTheme(dark = dark) { content() }
+    }
   }
 
   private fun web(): WebView {
@@ -291,4 +312,107 @@ class NoteWebEditorTest {
     val again = media.handle("/A-1/file")
     assertEquals("image/jpeg", again!!.mimeType)
   }
+
+  /** A drawing Apple renders as ink on white: what the engine hands over for both ink parts. */
+  private fun drawingPng(): ByteArray {
+    val bitmap = Bitmap.createBitmap(800, 400, Bitmap.Config.ARGB_8888)
+    val canvas = Canvas(bitmap)
+    canvas.drawColor(android.graphics.Color.WHITE)
+    val ink = Paint().apply {
+      color = android.graphics.Color.rgb(21, 26, 34)
+      strokeWidth = 8f
+      style = Paint.Style.STROKE
+      strokeCap = Paint.Cap.ROUND
+    }
+    canvas.drawRect(120f, 120f, 680f, 280f, ink)
+    canvas.drawCircle(260f, 80f, 26f, ink)
+    return java.io.ByteArrayOutputStream().also { bitmap.compress(Bitmap.CompressFormat.PNG, 100, it) }.toByteArray()
+  }
+
+  /**
+   * A sketch made on an iPhone is drawn where it sits, from the rendering Apple keeps for it:
+   * both ink parts the page asks for, the one its look shows drawn, and on a white card in the
+   * dark look, where the ink would otherwise be lost.
+   */
+  @Test
+  fun a_drawing_made_on_a_phone_is_drawn() {
+    fake = FakeEngine("Sketch\n\ufffc\n", """[{"length":7},{"length":1,"attachment":"DRAW-1"},{"length":1}]""")
+    fake.picture = drawingPng()
+    fake.attachmentInfo =
+      """{"id":"DRAW-1","uti":"com.apple.paper","kind":"drawing","title":"Island","width":800,"height":400,"size":9000,"hasPreview":true}"""
+    show("N-1", dark = true)
+    waitFor("document.querySelectorAll('img.nf-drawing').length") { it == "2" }
+    // The dark look's ink is the one shown, drawn, and on a white card.
+    val drawn = waitFor(
+      "(() => { const img = document.querySelector('img.nf-ink-dark');" +
+        "return img && img.complete && img.naturalWidth > 0 && getComputedStyle(img).display !== 'none'" +
+        "? img.naturalWidth + ':' + getComputedStyle(img).backgroundColor : 'no'; })()",
+    ) { it.contains("800:") }
+    assertTrue(drawn, drawn.contains("800:rgb(255, 255, 255)"))
+    // Never the file's card in its place.
+    assertEquals("0", js("document.querySelectorAll('.nf-attachment.is-file').length"))
+  }
+
+  /** A drawing stored as a HEIC is made drawable for both of the page's ink parts. */
+  @Test
+  fun a_heic_drawing_is_served_as_jpeg_for_both_ink_parts() {
+    val heic = InstrumentationRegistry.getInstrumentation().context.assets.open("two.heic").readBytes()
+    fake = FakeEngine("", "[]").apply { picture = heic }
+    val dir = File(compose.activity.cacheDir, "note-media-drawing").apply {
+      deleteRecursively()
+      mkdirs()
+    }
+    val media = NoteMedia(fake.engine, dir)
+
+    for (part in listOf("drawing", "drawing-dark")) {
+      val response = media.handle("/DRAW-1/$part")
+      assertNotNull("no bytes for $part", response)
+      assertEquals("image/jpeg", response!!.mimeType)
+      val shown = response.data.readBytes()
+      assertNotNull(BitmapFactory.decodeByteArray(shown, 0, shown.size))
+    }
+  }
+
+  /** A new note opens ready to type; an existing one opens to be read, the keyboard down. */
+  @Test(timeout = 120_000)
+  fun a_new_note_opens_focused_with_the_keyboard_up() {
+    fake = FakeEngine("", "[]")
+    show(guid = null)
+
+    assertEquals("true", waitFor("document.activeElement?.classList.contains('ProseMirror') === true") { it == "true" })
+    var webFocused = false
+    InstrumentationRegistry.getInstrumentation().runOnMainSync { webFocused = web().hasFocus() }
+    assertTrue("the WebView has no focus", webFocused)
+    assertTrue("the keyboard is down on a new note", waitForKeyboard(up = true))
+  }
+
+  @Test(timeout = 120_000)
+  fun an_existing_note_opens_to_be_read_with_the_keyboard_down() {
+    fake = FakeEngine("Lemon\ntart", """[{"length":10}]""")
+    show("N-1")
+    waitFor(text()) { it.contains("Lemon") }
+    Thread.sleep(1_000)
+    assertTrue("the keyboard came up on a note to read", !keyboardShown())
+  }
+
+  /** Whether the phone's keyboard is up over the page. */
+  private fun keyboardShown(): Boolean {
+    var shown = false
+    InstrumentationRegistry.getInstrumentation().runOnMainSync {
+      val root = compose.activity.window.decorView
+      shown = (androidx.core.view.ViewCompat.getRootWindowInsets(root)
+        ?.getInsets(androidx.core.view.WindowInsetsCompat.Type.ime())?.bottom ?: 0) > 0
+    }
+    return shown
+  }
+
+  private fun waitForKeyboard(up: Boolean, timeoutMs: Long = 15_000): Boolean {
+    val end = System.currentTimeMillis() + timeoutMs
+    while (System.currentTimeMillis() < end) {
+      if (keyboardShown() == up) return true
+      Thread.sleep(150)
+    }
+    return false
+  }
 }
+
