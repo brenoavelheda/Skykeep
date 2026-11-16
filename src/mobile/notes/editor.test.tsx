@@ -5,6 +5,7 @@ import { fromDoc, toDoc } from "../../screens/notes/rich";
 import { NoteEditor, type EditorHandle } from "../../screens/notes/NoteEditor";
 import type { Run } from "../../screens/notes/Formatted";
 import { runCommand } from "./commands";
+import { buildNote, DEV_NOTES } from "./fixtures";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -12,24 +13,7 @@ const plain = (length: number, extra: Partial<Run> = {}): Run => ({
   length, style: null, indent: 0, checked: null, bold: false, italic: false, underline: false, strike: false, link: null, ...extra,
 });
 
-/** A note built line by line: each line's setting, its pieces of text with their marks, and
- *  the newline that carries the setting — runs merged as Apple's editor merges them. */
-function note(lines: { set: Partial<Run>; pieces: [string, Partial<Run>][] }[]): { text: string; runs: Run[] } {
-  let text = "";
-  const runs: Run[] = [];
-  const push = (piece: string, run: Run) => {
-    text += piece;
-    const last = runs[runs.length - 1];
-    const key = (r: Run) => JSON.stringify({ ...r, length: 0 });
-    if (last && !last.attachment && !run.attachment && key(last) === key(run)) last.length += piece.length;
-    else runs.push({ ...run, length: piece.length });
-  };
-  lines.forEach(({ set, pieces }, i) => {
-    for (const [piece, marks] of pieces) push(piece, plain(piece.length, { ...set, ...marks }));
-    if (i < lines.length - 1) push("\n", plain(1, set));
-  });
-  return { text, runs };
-}
+const note = buildNote;
 
 describe("round trip", () => {
   it("round trip keeps every run", () => {
@@ -72,11 +56,15 @@ describe("round trip", () => {
       { set: { style: 103, checked: true }, pieces: [["Done", {}]] },
       { set: { style: 103, checked: false }, pieces: [["To do", {}]] },
       { set: { quote: true }, pieces: [["Quoted", {}]] },
-      { set: {}, pieces: [["￼", { attachment: "IMG-1" }]] },
+      { set: {}, pieces: [["\ufffc", { attachment: "IMG-1" }]] },
       { set: {}, pieces: [["End", {}]] },
     ]);
     expect(fixture.text.length).toBe(fixture.runs.reduce((n, r) => n + r.length, 0));
     expect(fromDoc(toDoc(fixture.text, fixture.runs))).toEqual(fixture);
+  });
+
+  it("the made-up notes the fake host serves read back as they are", () => {
+    for (const n of DEV_NOTES) expect(fromDoc(toDoc(n.text, n.runs))).toEqual({ text: n.text, runs: n.runs });
   });
 });
 
