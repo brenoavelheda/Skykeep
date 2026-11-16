@@ -48,7 +48,14 @@ import io.github.yashwanthkamireddi.skykeep.R
 import io.github.yashwanthkamireddi.skykeep.sync.NOTES_AUTHORITY
 import io.github.yashwanthkamireddi.skykeep.sync.Outcome
 import io.github.yashwanthkamireddi.skykeep.ui.notes.NoteEditorState
-import io.github.yashwanthkamireddi.skykeep.ui.notes.NoteWebEditor
+import io.github.yashwanthkamireddi.skykeep.ui.notes.AttachmentViewer
+import io.github.yashwanthkamireddi.skykeep.ui.notes.NoteEditingArea
+import io.github.yashwanthkamireddi.skykeep.ui.notes.NoteLockNow
+import io.github.yashwanthkamireddi.skykeep.ui.notes.NoteMoreMenu
+import io.github.yashwanthkamireddi.skykeep.ui.notes.NoteUndoRedo
+import io.github.yashwanthkamireddi.skykeep.ui.notes.OpenedAttachment
+import io.github.yashwanthkamireddi.skykeep.ui.notes.foundWords
+import io.github.yashwanthkamireddi.skykeep.ui.notes.openAttachmentFile
 import java.time.Instant
 import java.time.LocalDate
 import java.time.ZoneId
@@ -196,7 +203,8 @@ fun NotesPage(engine: AccountInterface) {
   Column(Modifier.fillMaxSize()) {
     problem?.let { Text(it, color = MaterialTheme.colorScheme.error, modifier = Modifier.padding(20.dp, 12.dp)) }
     when (val p = place) {
-      is NPlace.Open -> NoteScreen(engine, p.guid, p.from.guid, folders, onBack = { place = p.from; generation++ }, onProblem = { problem = it })
+      // A note opened from search results shows the searched words marked in it too.
+      is NPlace.Open -> NoteScreen(engine, p.guid, p.from.guid, folders, foundWords(query), onBack = { place = p.from; generation++ }, onProblem = { problem = it })
       else -> {
         val folder = p as? NPlace.Folder
         val trash = folder != null && folders.firstOrNull { it.guid == folder.guid }?.trash == true
@@ -410,7 +418,7 @@ private fun NoteList(engine: AccountInterface, notes: List<NItem>, order: NoteOr
  * note only for what the bar shows: whether it is locked, pinned, or in Recently Deleted.
  */
 @Composable
-private fun NoteScreen(engine: AccountInterface, opened: String?, folderGuid: String?, folders: List<NFolder>, onBack: () -> Unit, onProblem: (String) -> Unit) {
+private fun NoteScreen(engine: AccountInterface, opened: String?, folderGuid: String?, folders: List<NFolder>, found: List<String>, onBack: () -> Unit, onProblem: (String) -> Unit) {
   val context = LocalContext.current
   val scope = rememberCoroutineScope()
   var moving by remember { mutableStateOf(false) }
@@ -423,6 +431,8 @@ private fun NoteScreen(engine: AccountInterface, opened: String?, folderGuid: St
   // The page owns the note; this holds what the top bar shows and the calls it makes to it.
   val editor = remember { NoteEditorState() }
   val guid by editor.guid.collectAsState()
+  // The picture or drawing open full screen over the note.
+  var viewing by remember { mutableStateOf<OpenedAttachment?>(null) }
 
   fun reason(t: Throwable) = (t as? uniffi.quince_mobile.EngineException.Failed)?.reason ?: "This note couldn't be saved."
 
@@ -469,6 +479,11 @@ private fun NoteScreen(engine: AccountInterface, opened: String?, folderGuid: St
       syncNotes(context)
     }
     editor.onError = onProblem
+    // A picture tapped opens full screen; any other file opens in its app.
+    editor.onOpenAttachment = { id, kind, name ->
+      val tapped = OpenedAttachment(id, kind, name)
+      if (tapped.shownHere) viewing = tapped else scope.launch { openAttachmentFile(context, engine, tapped, onProblem) }
+    }
   }
   DisposableEffect(editor) {
     // A sync landed: the page reads the note again, under its own rules (never over typing).
@@ -482,16 +497,20 @@ private fun NoteScreen(engine: AccountInterface, opened: String?, folderGuid: St
 
   val trashed = (doc?.folderGuid ?: folderGuid) == TRASH
   val locked = doc?.locked == true
+  val editable = (doc?.editable ?: true) && !trashed
   val g = guid
   val accent = MaterialTheme.colorScheme.primary
   Column(Modifier.fillMaxSize()) {
-    // The desktop's note toolbar as phone actions: back; pin, move, delete (recover in Recently
-    // Deleted). Each a mark in Notes' colour, named for TalkBack.
+    // The desktop's note toolbar as phone actions: back; undo, redo; pin, move, delete (recover in
+    // Recently Deleted); Lock Now on a locked note; the menu's export and attach. Each a mark in
+    // Notes' colour, named for TalkBack.
     Row(Modifier.padding(start = 4.dp, end = 4.dp, top = 4.dp), verticalAlignment = Alignment.CenterVertically) {
       IconButton(onClick = { scope.launch { editor.flush(); onBack() } }) {
         Icon(painterResource(R.drawable.ic_back), contentDescription = "Back", tint = accent)
       }
       Spacer(Modifier.weight(1f))
+      if (editable && !locked) NoteUndoRedo(editor)
+      if (locked) NoteLockNow(editor)
       if (!locked && g != null) {
         if (trashed) {
           TextButton(onClick = { move(g, null) }) { Text("Recover") }
@@ -517,6 +536,9 @@ private fun NoteScreen(engine: AccountInterface, opened: String?, folderGuid: St
           }
         }
       }
+      // As on the desktop: no export from Recently Deleted or of a locked note; files are added
+      // only to a note that can be written. A new note exports once something is typed in it.
+      NoteMoreMenu(engine, editor, canExport = !trashed && !locked && g != null, canAttach = editable && !locked, onProblem = onProblem)
     }
     // When it last changed, small and centred above the note, as the desktop shows it.
     doc?.modifiedAt?.let { at ->
@@ -526,17 +548,18 @@ private fun NoteScreen(engine: AccountInterface, opened: String?, folderGuid: St
         modifier = Modifier.fillMaxWidth().padding(bottom = 4.dp), textAlign = TextAlign.Center,
       )
     }
-    NoteWebEditor(
+    NoteEditingArea(
       engine = engine,
       state = editor,
       guid = openedAs,
       folderGuid = folderGuid,
-      editable = (doc?.editable ?: true) && !trashed,
+      editable = editable,
       locked = locked,
-      found = emptyList(),
+      found = found,
       modifier = Modifier.fillMaxSize(),
     )
   }
+  viewing?.let { AttachmentViewer(engine, it) { viewing = null } }
   if (moving) {
     val g = guid
     AlertDialog(

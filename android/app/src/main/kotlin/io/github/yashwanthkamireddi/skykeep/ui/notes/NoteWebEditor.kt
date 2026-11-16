@@ -127,6 +127,9 @@ private class NotePageView(
     .build()
 
   val view: WebView = WebView(context).apply {
+    // The page's height is the view's: a WebView left at wrap-content (an AndroidView's default)
+    // lays the page out on a viewport of no height, and the note shows only its first lines.
+    layoutParams = android.view.ViewGroup.LayoutParams(android.view.ViewGroup.LayoutParams.MATCH_PARENT, android.view.ViewGroup.LayoutParams.MATCH_PARENT)
     settings.javaScriptEnabled = true
     // The page reads localStorage for its language and one setting; nothing else needs storage.
     settings.domStorageEnabled = true
