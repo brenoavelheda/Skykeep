@@ -21,6 +21,7 @@ Under `app/src/main/kotlin/io/github/yashwanthkamireddi/skykeep/`:
 | `sync/DriveProvider.kt`, `DriveFiles.kt`, `DriveReads.kt`, `DriveWrites.kt` | iCloud Drive in the Files app and every app's pickers: files read in parts as apps read them, saves held in the engine's journal until sent |
 | `sync/PhotoBackup.kt`, `SendToIphone.kt`, `ReminderAlerts.kt` | camera backup, the Share sheet target, reminder alarms |
 | `sync/Account.kt`, `Services.kt`, `SyncWork.kt`, `Work.kt`, `SignOut.kt` | the Android account, its sync adapters (thin triggers), the WorkManager work that syncs, signing out |
+| `ui/notes/NoteWebEditor.kt`, `NoteHost.kt`, `NoteEditorState.kt`, `NoteMedia.kt` | one note in the desktop's own editor, in a locked-down WebView: the page's commands to the engine, its pictures, and the state the top and format bars read |
 | `ui/` | the screens; `ui/theme/` holds the palette, type and motion |
 
 `app/src/main/jniLibs/`, `app/src/main/kotlin/uniffi/` and `res/raw/engine_licences.json` are
