@@ -1,0 +1,236 @@
+/* The note page on a phone: the desktop's note styles (tokens.css, kit.css, notes.css) set for
+   touch. The colours are the Android app's own (ui/theme/Palette.kt, the same brand as
+   tokens.css), with Notes' yellow accent; the type is the device's own sans at the app's sizes
+   (ui/theme/Type.kt: body 16/24, a title 24/30). 16px at the sides, every control 48px tall,
+   nothing that needs a hover or a right-click. */
+
+:root {
+  --font-ui: system-ui, Roboto, "Noto Sans", sans-serif;
+  /* Palette.accent(Notes): a filled button and its text. */
+  --m-primary: #7a5600;
+  --m-on-primary: #ffffff;
+  /* Accent text and glyphs on the page: 6.4:1 on the light page, 9.1:1 on the dark one. */
+  --m-accent-text: #7a5600;
+  --m-press: color-mix(in srgb, var(--text) 10%, transparent);
+  --m-gutter: 16px;
+  -webkit-tap-highlight-color: transparent;
+  -webkit-text-size-adjust: 100%;
+  text-size-adjust: 100%;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) { --m-primary: #f2b33d; --m-on-primary: #151a22; --m-accent-text: #f2b33d; }
+}
+:root[data-theme="dark"] { --m-primary: #f2b33d; --m-on-primary: #151a22; --m-accent-text: #f2b33d; }
+
+body {
+  font-size: 1rem;
+  line-height: 1.5;
+  overscroll-behavior: none;
+}
+
+/* A phone's scrollbars are its own: only a table that scrolls sideways shows a thin one. */
+::-webkit-scrollbar { width: 0; height: 3px; }
+
+.m-page {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+}
+
+/* ---- the note -------------------------------------------------------------------------- */
+
+.m-page .note-editor {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: 8px calc(var(--m-gutter) + env(safe-area-inset-right)) calc(32px + env(safe-area-inset-bottom)) calc(var(--m-gutter) + env(safe-area-inset-left));
+}
+.m-page .note-rich {
+  max-width: none;
+  min-height: 100%;
+  font-size: 1rem;
+  line-height: 1.5;
+}
+/* Read-only, the note is only as long as its text: what is said beneath it follows it. */
+.m-page .note-editor[data-editable="false"] :is(.note-rich-host, .note-rich) { min-height: 0; flex: none; }
+.m-page .note-rich .nf-p { min-height: 1.5em; }
+.m-page .note-rich .nf-p[data-style="0"],
+.m-page .note-rich .nf-p:first-child[data-style="none"] { font-size: 1.5rem; line-height: 1.25; font-weight: 700; margin-bottom: 8px; }
+.m-page .note-rich .nf-p[data-style="1"] { font-size: 1.25rem; line-height: 1.3; margin-top: 8px; }
+.m-page .note-rich .nf-p[data-style="2"] { font-size: 1.0625rem; line-height: 1.4; }
+.m-page .note-rich .nf-p[data-style="4"] { font-size: 0.875rem; }
+.m-page .note-rich[data-placeholder] .nf-p:only-child:empty::after,
+.m-page .note-rich[data-placeholder] .nf-p:only-child:has(> br:only-child)::after { font-size: 1.5rem; line-height: 1.25; }
+.m-page .note-rich a { color: var(--m-accent-text); }
+
+/* A checklist item is a row a finger can tick: its circle 22px in a 44px-tall line, the
+   gutter in front of it the editor's tap area (NoteEditor reads a press left of the text). */
+.m-page .note-rich .nf-p[data-style="103"] {
+  padding-block: 10px;
+  padding-inline-start: calc(var(--indent, 0) * 1.5em + 36px);
+}
+.m-page .note-rich .nf-p[data-style="103"]::before {
+  top: 11px;
+  width: 22px;
+  height: 22px;
+  -webkit-mask-size: 22px 22px;
+  mask-size: 22px 22px;
+}
+.m-page .note-rich .nf-p[data-style="103"][data-checked="true"]::before { background-size: 22px 22px, auto; }
+.m-page .note-rich .nf-p[data-style="103"]:has(> .nf-attachment:is(.is-table, .is-image, .is-doc, .is-drawing, .is-table-unread)) {
+  padding-block: 0;
+  padding-inline-start: calc(var(--indent, 0) * 1.5em);
+}
+
+/* Pictures, drawings and files where they sit, the width of the note at most. */
+.m-page .nf-image,
+.m-page .nf-drawing { max-width: 100%; border-radius: 12px; cursor: default; }
+.m-page .nf-drawing { border-radius: 0; }
+.m-page .note-rich .nf-attachment.is-image,
+.m-page .note-rich .nf-attachment.is-doc,
+.m-page .note-rich .nf-attachment.is-file { margin: 6px 0; }
+.m-page .nf-file {
+  min-height: 56px;
+  max-width: 100%;
+  gap: 12px;
+  padding: 10px 14px;
+  border-radius: 14px;
+  font-size: 0.9375rem;
+}
+.m-page .nf-file-glyph { min-width: 36px; height: 36px; border-radius: 10px; font-size: 0.625rem; }
+.m-page .nf-file-meta { font-size: 0.8125rem; }
+.m-page .nf-doc { padding: 10px; border-radius: 14px; }
+.m-page .nf-doc-preview { width: 160px; }
+.m-page .nf-doc-name { max-width: 160px; font-size: 0.8125rem; }
+/* A touch leaves no hover behind: pressed is the only state shown. */
+.m-page :is(.nf-file, .nf-doc):hover { background: color-mix(in srgb, var(--text) 6%, transparent); }
+.m-page :is(.nf-file, .nf-doc):active { background: color-mix(in srgb, var(--text) 12%, transparent); }
+.m-page .note-rich .nf-attachment.is-pending { width: 100%; height: 56px; border-radius: 14px; }
+
+/* A table: cells tall enough to tap into, the grid scrolling sideways when it is wider than
+   the phone. Its cells are not typed in where the note is read-only. */
+.m-page .nf-table td { min-width: 112px; height: 44px; padding: 10px 12px; font-size: 0.9375rem; }
+.m-page .nf-cell-edit { min-height: 24px; }
+.m-page .note-editor[data-editable="false"] .nf-cell-edit { pointer-events: none; }
+
+.m-readonly { max-width: none; margin: 24px 0 0; font-size: 0.8125rem; line-height: 1.4; }
+
+/* Nothing to show yet: said in the middle of the page, never an empty note to type into. */
+.m-state {
+  margin: auto 0;
+  padding: 48px calc(var(--m-gutter) + 8px) 20vh;
+  color: var(--text-2);
+  font-size: 0.9375rem;
+  line-height: 1.5;
+  text-align: center;
+}
+
+/* A file on its way in: the note waits under a clear cover, the card at its foot. */
+.m-adding { position: fixed; padding: 16px 16px calc(24px + env(safe-area-inset-bottom)); }
+.m-adding .note-adding-state { font-size: 0.875rem; color: var(--text); }
+
+/* ---- a locked note ---------------------------------------------------------------------- */
+
+.m-lock { justify-content: center; }
+.m-lock .note-lock { padding: 32px var(--m-gutter) 18vh; gap: 8px; }
+.m-lock .note-lock-glyph { width: 72px; height: 72px; color: var(--m-accent-text); }
+.m-lock .note-lock-title { font-size: 1.25rem; font-weight: 600; line-height: 1.3; }
+.m-lock .note-lock-lede { margin-bottom: 16px; font-size: 0.9375rem; line-height: 1.45; }
+.m-lock .note-lock-form { width: min(100%, 360px); gap: 12px; }
+.m-lock .note-lock-field {
+  height: 48px;
+  padding: 0 16px;
+  border-radius: 12px;
+  font-size: 1rem;
+}
+.m-lock .note-lock-field:focus { border-color: var(--m-primary); box-shadow: 0 0 0 1px var(--m-primary); }
+.m-lock .note-lock-open {
+  min-height: 48px;
+  border-radius: 999px;
+  background: var(--m-primary);
+  color: var(--m-on-primary);
+  font-size: 0.9375rem;
+  font-weight: 500;
+}
+.m-lock .note-lock-open:disabled { background: var(--fill-selected); color: var(--text-3); }
+.m-lock .note-lock-problem { font-size: 0.875rem; }
+.m-lock .note-lock-hint-ask {
+  min-height: 48px;
+  padding: 0 16px;
+  color: var(--m-accent-text);
+  font-size: 0.9375rem;
+  font-weight: 500;
+}
+.m-lock .note-lock-hint { font-size: 0.9375rem; line-height: 1.45; }
+
+/* ---- Add Link: a sheet at the page's foot, above the keyboard ----------------------------- */
+
+.m-sheet-scrim {
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  display: flex;
+  align-items: flex-end;
+  background: rgba(21, 26, 34, 0.32);
+}
+.m-sheet {
+  display: grid;
+  gap: 16px;
+  width: 100%;
+  padding: 20px calc(var(--m-gutter) + env(safe-area-inset-right)) calc(16px + env(safe-area-inset-bottom)) calc(var(--m-gutter) + env(safe-area-inset-left));
+  border-radius: 24px 24px 0 0;
+  background: var(--sheet);
+  box-shadow: 0 -8px 32px rgba(0, 0, 0, 0.2);
+}
+.m-sheet-title { margin: 0; color: var(--text); font-size: 1.125rem; font-weight: 600; line-height: 1.3; }
+.m-field { display: grid; gap: 6px; }
+.m-field-label { color: var(--text-2); font-size: 0.875rem; font-weight: 500; }
+.m-field-box {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  height: 48px;
+  padding: 0 14px;
+  border-radius: 12px;
+  background: var(--field);
+  box-shadow: inset 0 0 0 1px var(--field-edge);
+  color: var(--text-2);
+}
+.m-field-box:focus-within { box-shadow: inset 0 0 0 2px var(--m-primary); }
+.m-field-box input {
+  flex: 1;
+  min-width: 0;
+  height: 100%;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--text);
+  font: inherit;
+  font-size: 1rem;
+  outline: none;
+}
+.m-field-box input::placeholder { color: var(--text-3); opacity: 1; }
+.m-field-box input[aria-invalid="true"] { color: var(--danger); }
+.m-sheet-wrong { margin: -6px 0 0; color: var(--danger); font-size: 0.875rem; line-height: 1.4; }
+.m-sheet-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px; }
+.m-link-remove { margin-inline-end: auto; }
+.m-button {
+  min-width: 64px;
+  min-height: 48px;
+  padding: 0 18px;
+  border: 0;
+  border-radius: 999px;
+  background: transparent;
+  color: var(--m-accent-text);
+  font: inherit;
+  font-size: 0.9375rem;
+  font-weight: 500;
+}
+.m-button:active { background: var(--m-press); }
+.m-button.is-primary { background: var(--m-primary); color: var(--m-on-primary); }
+.m-button.is-primary:active { background: color-mix(in srgb, var(--m-primary) 84%, #000); }
+.m-button.is-danger { color: var(--danger); }
+.m-button:focus-visible { outline: 2px solid var(--m-primary); outline-offset: 2px; }

@@ -9,7 +9,10 @@
     "build": "tsc --noEmit && vite build",
     "preview": "vite preview",
     "licences": "node scripts/licences.mjs",
-    "tauri": "tauri"
+    "tauri": "tauri",
+    "build:mobile-notes": "vite build --config vite.mobile.config.ts",
+    "dev:mobile-notes": "vite --config vite.mobile.config.ts",
+    "test": "vitest run --config vite.mobile.config.ts"
   },
   "dependencies": {
     "@tauri-apps/api": "~2.12.4",
@@ -30,9 +33,11 @@
     "@types/react-dom": "^18.3.1",
     "@vitejs/plugin-react": "^4.3.4",
     "axe-core": "^4.13.0",
+    "jsdom": "^30.0.1",
     "playwright": "^1.63.0",
     "typescript": "^5.7.2",
-    "vite": "^6.4.5"
+    "vite": "^6.4.5",
+    "vitest": "^5.1.0"
   },
   "allowScripts": {
     "esbuild@0.25.12": true
