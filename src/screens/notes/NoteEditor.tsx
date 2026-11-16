@@ -2,7 +2,7 @@ import "prosemirror-view/style/prosemirror.css";
 import { forwardRef, useEffect, useImperativeHandle, useRef, useState } from "react";
 import { EditorState, Plugin, TextSelection, type Command, type Transaction } from "prosemirror-state";
 import { Decoration, DecorationSet, EditorView } from "prosemirror-view";
-import { history, undo, redo } from "prosemirror-history";
+import { history, undo, redo, undoDepth, redoDepth } from "prosemirror-history";
 import { keymap } from "prosemirror-keymap";
 import { baseKeymap, splitBlockAs, toggleMark, chainCommands } from "prosemirror-commands";
 import { Fragment, Slice, type Node as PMNode } from "prosemirror-model";
@@ -486,6 +486,11 @@ export type EditorHandle = {
   current: () => { text: string; runs: Run[] } | null;
   /** Where the cursor is, in UTF-16 units of `current().text`; null with no editor. */
   caret: () => number | null;
+  /** Undo and Redo, as the keys do them — for a toolbar outside the note (the phone's). */
+  undo: () => void;
+  redo: () => void;
+  /** Whether there is anything to undo or to redo. */
+  history: () => { canUndo: boolean; canRedo: boolean };
 };
 
 type Props = {
@@ -1170,6 +1175,18 @@ export const NoteEditor = forwardRef<EditorHandle, Props>(function NoteEditor(
       if (!v) return null;
       // The text up to the cursor, read the way the whole note is read, is how far in it is.
       return fromDoc(v.state.doc.cut(0, v.state.selection.head)).text.length;
+    },
+    undo: () => {
+      const v = view.current;
+      if (v) undo(v.state, v.dispatch);
+    },
+    redo: () => {
+      const v = view.current;
+      if (v) redo(v.state, v.dispatch);
+    },
+    history: () => {
+      const v = view.current;
+      return { canUndo: v ? undoDepth(v.state) > 0 : false, canRedo: v ? redoDepth(v.state) > 0 : false };
     },
   }));
 
