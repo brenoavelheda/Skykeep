@@ -60,6 +60,82 @@ pub struct Unlocked {
     pub runs: Vec<crate::ckdocument::Run>,
 }
 
+/// A password held in memory, wiped when let go of.
+struct Secret(Vec<u8>);
+
+impl Drop for Secret {
+    fn drop(&mut self) {
+        self.0.fill(0);
+    }
+}
+
+/// The passwords that opened locked notes this session, by note: in memory only, never in the
+/// library, the settings or the keyring. Kept by the shell (the desktop beside its window, the
+/// phone in its engine), so the same note opens again without asking until the app quits, the
+/// account signs out, or the person locks notes again.
+pub struct Passwords(std::sync::Mutex<Option<std::collections::HashMap<String, Secret>>>);
+
+impl Passwords {
+    #[must_use]
+    pub const fn new() -> Self {
+        Self(std::sync::Mutex::new(None))
+    }
+
+    /// The password to open `guid` with: the one given, or the one that opened it earlier this
+    /// session. An empty one is the dialog's untouched field, not a password to try.
+    pub fn for_unlock(
+        &self,
+        guid: &str,
+        given: Option<String>,
+    ) -> std::result::Result<String, String> {
+        given
+            .filter(|p| !p.is_empty())
+            .or_else(|| {
+                self.0
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .as_ref()?
+                    .get(guid)
+                    .and_then(|s| String::from_utf8(s.0.clone()).ok())
+            })
+            .ok_or_else(|| "Enter this note’s password to open it.".to_string())
+    }
+
+    pub fn remember(&self, guid: &str, password: &str) {
+        self.0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get_or_insert_with(std::collections::HashMap::new)
+            .insert(guid.to_string(), Secret(password.as_bytes().to_vec()));
+    }
+
+    /// A password that did not open the note is forgotten, never kept.
+    pub fn forget_one(&self, guid: &str) {
+        if let Some(map) = self
+            .0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .as_mut()
+        {
+            map.remove(guid);
+        }
+    }
+
+    /// Every remembered password let go of: on sign-out, or when the window locks notes again.
+    pub fn forget_all(&self) {
+        *self
+            .0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = None;
+    }
+}
+
+impl Default for Passwords {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 /// A bytes field, as `name` + `Encrypted` or as `name`.
 fn bytes_of(record: &Value, name: &str) -> Option<Vec<u8>> {
     [format!("{name}Encrypted"), name.to_string()]
@@ -357,5 +433,32 @@ mod tests {
         let mut huge = seal("pw", b"x", 1000);
         huge["fields"]["CryptoIterationCount"]["value"] = json!(4_000_000_000_u64);
         assert!(matches!(unlock(&huge, "pw"), Err(Error::Refused(_))));
+    }
+
+    /// A password that opened a note is remembered for the session only; a wrong one is
+    /// forgotten, and locking every note again makes the next open ask, as the desktop does.
+    #[test]
+    fn a_password_is_remembered_until_forgotten() {
+        let passwords = Passwords::new();
+        assert_eq!(
+            passwords.for_unlock("N", Some("hunter2".into())).unwrap(),
+            "hunter2"
+        );
+        assert!(passwords.for_unlock("N", None).is_err());
+        passwords.remember("N", "hunter2");
+        assert_eq!(passwords.for_unlock("N", None).unwrap(), "hunter2");
+        // An empty password is the dialog's untouched field, not a password to try.
+        assert_eq!(
+            passwords.for_unlock("N", Some(String::new())).unwrap(),
+            "hunter2"
+        );
+        passwords.forget_one("N");
+        assert!(passwords.for_unlock("N", None).is_err());
+        passwords.remember("N", "hunter2");
+        passwords.forget_all();
+        assert_eq!(
+            passwords.for_unlock("N", None).unwrap_err(),
+            "Enter this note’s password to open it."
+        );
     }
 }

@@ -316,6 +316,87 @@ pub async fn bytes(
     }
 }
 
+/// The characters of an attachment id kept in a file name: an id from a request is never a path.
+#[must_use]
+pub fn file_id(id: &str) -> String {
+    id.chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '-' {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect()
+}
+
+/// The name a part is kept under on disk, the same one the desktop has always used.
+#[must_use]
+pub fn part_name(part: Part) -> &'static str {
+    match part {
+        Part::File => "file",
+        Part::Preview => "preview",
+        Part::Drawing => "drawing",
+    }
+}
+
+/// An attachment's bytes kept on disk beside the app's own files: from there when they have
+/// been fetched before, from Apple when not — so a note opens on its pictures again at once,
+/// and offline.
+pub struct Cache {
+    dir: std::path::PathBuf,
+}
+
+impl Cache {
+    #[must_use]
+    pub fn new(dir: impl Into<std::path::PathBuf>) -> Self {
+        Self { dir: dir.into() }
+    }
+
+    /// Where `id`'s part is kept ("file", "preview", "drawing"), whether or not it is there.
+    #[must_use]
+    pub fn path(&self, id: &str, name: &str) -> std::path::PathBuf {
+        self.dir.join(format!("{}-{name}", file_id(id)))
+    }
+
+    /// The bytes already kept for `id`'s part, if they are.
+    #[must_use]
+    pub fn kept(&self, id: &str, name: &str) -> Option<Vec<u8>> {
+        std::fs::read(self.path(id, name)).ok()
+    }
+
+    /// `id`'s part: from disk when it is kept there, from `fetch` when not, and kept for the
+    /// next time. A read or a write that fails is not the fetch failing: the bytes are still
+    /// handed over, and simply not kept.
+    pub async fn get_or_fetch<E, F, Fut>(
+        &self,
+        id: &str,
+        name: &str,
+        fetch: F,
+    ) -> std::result::Result<Vec<u8>, E>
+    where
+        F: FnOnce() -> Fut,
+        Fut: std::future::Future<Output = std::result::Result<Vec<u8>, E>>,
+    {
+        let path = self.path(id, name);
+        if let Ok(bytes) = tokio::fs::read(&path).await {
+            return Ok(bytes);
+        }
+        let bytes = fetch().await?;
+        if let Some(dir) = path.parent() {
+            tokio::fs::create_dir_all(dir).await.ok();
+        }
+        // Whole or not at all: written beside it and renamed in, so a second request for the
+        // same picture (a drawing's light and dark ink, the viewer) never reads half a file —
+        // which the window took for a broken picture and showed as a file for the session.
+        let part = path.with_extension("part");
+        if tokio::fs::write(&part, &bytes).await.is_ok() {
+            let _ = tokio::fs::rename(&part, &path).await;
+        }
+        Ok(bytes)
+    }
+}
+
 #[cfg(test)]
 mod empty_asset_tests {
     use super::*;
@@ -428,5 +509,44 @@ mod tests {
         );
         let bare = serde_json::json!({ "fields": {} });
         assert_eq!(inline_info("A", uti.into(), &bare).title, None);
+    }
+
+    /// A picture fetched once is served from disk the next time: opening the note again asks
+    /// Apple nothing, and a request that never reached Apple before is fetched once and kept.
+    #[tokio::test]
+    async fn a_picture_is_fetched_once_and_kept() {
+        let dir = std::env::temp_dir().join(format!("skykeep-note-media-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let cache = Cache::new(&dir);
+        let asked = std::sync::atomic::AtomicUsize::new(0);
+        let fetched = cache
+            .get_or_fetch::<std::io::Error, _, _>("P-1", "file", || async {
+                asked.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                Ok(b"picture".to_vec())
+            })
+            .await
+            .unwrap();
+        assert_eq!(fetched, b"picture");
+        assert_eq!(cache.kept("P-1", "file").as_deref(), Some(&b"picture"[..]));
+        let kept = cache
+            .get_or_fetch::<std::io::Error, _, _>("P-1", "file", || async {
+                unreachable!("asked Apple for a picture already kept")
+            })
+            .await
+            .unwrap();
+        assert_eq!(kept, b"picture");
+        assert_eq!(asked.load(std::sync::atomic::Ordering::SeqCst), 1);
+        // Another part of the same attachment is its own file.
+        assert!(!cache.path("P-1", "preview").exists());
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// An id from a request names no path: only letters, digits and `-` reach the file name.
+    #[test]
+    fn an_attachment_id_cannot_climb_out_of_the_cache() {
+        assert_eq!(file_id("A/b\\c..d"), "A_b_c__d");
+        assert_eq!(part_name(Part::File), "file");
+        assert_eq!(part_name(Part::Preview), "preview");
+        assert_eq!(part_name(Part::Drawing), "drawing");
     }
 }
