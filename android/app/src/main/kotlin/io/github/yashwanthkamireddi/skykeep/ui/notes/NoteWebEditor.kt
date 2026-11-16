@@ -228,7 +228,9 @@ private class NotePageView(
               "${answer.id}, ${answer.ok}, ${JSONObject.quote(answer.payload)})",
           )
         }
-        is NoteMessage.Event -> state.event(message.cmd, message.args)
+        is NoteMessage.Event -> view.post {
+          if (!closed.get()) state.event(message.cmd, message.args)
+        }
         // Not the envelope: there is no id to answer, and the page never asked.
         is NoteMessage.Unreadable -> Unit
       }
