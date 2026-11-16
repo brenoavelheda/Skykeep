@@ -23,12 +23,13 @@ fn cache(account: &Account) -> Cache {
 }
 
 /// What an attachment is, from the library when it was read before; `None` (asked of Apple
-/// again) when it was never read or what is kept does not read as JSON.
+/// again) when it was never read, what is kept does not read as JSON, or it was read before
+/// Skykeep knew the kind (an old scan read as a file).
 pub(crate) fn attachment_info(l: &Library, id: &str) -> Option<String> {
     l.state(&attachment_key(id))
         .ok()
         .flatten()
-        .filter(|kept| serde_json::from_str::<serde_json::Value>(kept).is_ok())
+        .filter(|kept| note_media::kept_is_current(kept))
 }
 
 /// Each note's first picture already on the phone, by note: the list's small picture. Read from
@@ -161,6 +162,23 @@ mod tests {
         // Kept but not JSON: read again from Apple, never handed to the page.
         lib.set_state(&attachment_key("B"), "{not json").unwrap();
         assert_eq!(attachment_info(&lib, "B"), None);
+        // A scan read before Skykeep knew what a scan is was kept as a file; it is read
+        // again rather than left a card that cannot open.
+        lib.set_state(
+            &attachment_key("C"),
+            r#"{"id":"C","uti":"com.apple.notes.gallery","kind":"file"}"#,
+        )
+        .unwrap();
+        assert_eq!(attachment_info(&lib, "C"), None);
+        lib.set_state(
+            &attachment_key("C"),
+            r#"{"id":"C","uti":"com.apple.notes.gallery","kind":"scan","pages":[]}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            attachment_info(&lib, "C").as_deref(),
+            Some(r#"{"id":"C","uti":"com.apple.notes.gallery","kind":"scan","pages":[]}"#)
+        );
     }
 
     /// The list's small picture is a picture already on the phone: one never drawn is passed

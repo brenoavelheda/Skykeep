@@ -718,8 +718,12 @@ async fn note_attachment_info(
 ) -> UiResult<serde_json::Value> {
     let key = format!("notes.attachment.{id}");
     if let Ok(Some(kept)) = data.0.read(|library| library.state(&key)).await {
-        if let Ok(info) = serde_json::from_str::<serde_json::Value>(&kept) {
-            return Ok(info);
+        // A scan or a link read before Skykeep knew those kinds was kept as a file: read it
+        // again rather than leave a card that cannot open.
+        if quince_icloud::note_media::kept_is_current(&kept) {
+            if let Ok(info) = serde_json::from_str::<serde_json::Value>(&kept) {
+                return Ok(info);
+            }
         }
     }
     let (http, root, params) = cloudkit_context(&auth).await?;

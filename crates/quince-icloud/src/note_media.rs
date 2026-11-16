@@ -25,8 +25,9 @@ const ZONE: &str = "Notes";
 pub struct AttachmentInfo {
     pub id: String,
     pub uti: String,
-    /// `image`, `drawing`, `table`, `document` (PDF, scan), `audio`, `video`, `inline` (a
-    /// tag or a mention, drawn as its text), or `file`.
+    /// `image`, `drawing`, `table`, `document` (PDF, scan), `scan` (an old scan: a gallery of
+    /// pages), `link` (a web address's card), `audio`, `video`, `inline` (a tag or a mention,
+    /// drawn as its text), or `file`.
     pub kind: &'static str,
     pub filename: Option<String>,
     pub title: Option<String>,
@@ -35,6 +36,20 @@ pub struct AttachmentInfo {
     pub size: Option<i64>,
     /// Whether Apple keeps a rendering of it to show in place of the file.
     pub has_preview: bool,
+    /// An old scan's pages, in the order Apple shows them: picture attachments of their own.
+    #[serde(default)]
+    pub pages: Vec<ScanPage>,
+    /// A web link's address (`public.url`), the card's way out.
+    #[serde(default)]
+    pub url: Option<String>,
+}
+
+/// One page of an old scan: a picture attachment, with the size Apple keeps for it.
+#[derive(Debug, Clone, Serialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct ScanPage {    pub id: String,
+    pub width: Option<f64>,
+    pub height: Option<f64>,
 }
 
 /// The kind of thing a type identifier names, as Notes draws it.
@@ -57,6 +72,15 @@ pub fn kind_of(uti: &str) -> &'static str {
     // A table: drawn as its grid, never offered as a file to open.
     if u == crate::table::UTI {
         return "table";
+    }
+    // An old scan (before iOS 17): a gallery record whose pages are picture attachments of
+    // their own, drawn as the pictures they are.
+    if u == "com.apple.notes.gallery" {
+        return "scan";
+    }
+    // A web address kept as a link card: its title, address and Apple's rendering of it.
+    if u == "public.url" {
+        return "link";
     }
     if matches!(
         u.as_str(),
@@ -122,6 +146,12 @@ pub async fn info(
     if kind_of(&uti) == "inline" {
         return Ok(inline_info(id, uti, &record));
     }
+    if kind_of(&uti) == "scan" {
+        return scan_info(&client, id, uti, &record).await;
+    }
+    if kind_of(&uti) == "link" {
+        return Ok(link_info(id, uti, &record));
+    }
     let media = match record
         .pointer("/fields/Media/value/recordName")
         .and_then(Value::as_str)
@@ -167,6 +197,8 @@ pub async fn info(
             .pointer("/fields/PreviewImages/value")
             .and_then(Value::as_array)
             .is_some_and(|a| !a.is_empty()),
+        pages: Vec::new(),
+        url: None,
         uti,
     })
 }
@@ -203,8 +235,194 @@ fn inline_info(id: &str, uti: String, record: &Value) -> AttachmentInfo {
         height: None,
         size: None,
         has_preview: false,
+        pages: Vec::new(),
+        url: None,
         uti,
     }
+}
+
+/// An old scan: a gallery record with no file of its own. Its pages are picture attachments
+/// named, in order, in its `MergeableDataEncrypted` (measured 2026-11-16: every gallery's
+/// data names exactly its children, each `"$<uuid>"`). Each page is read once here so the
+/// note knows how large to draw it; a page Apple no longer holds, or one that belongs to
+/// another attachment, is left out.
+async fn scan_info(
+    client: &ZoneClient<'_>,
+    id: &str,
+    uti: String,
+    record: &Value,
+) -> Result<AttachmentInfo> {
+    let ids = gallery_pages(record);
+    let found = client.lookup_records(ZONE, &ids).await?;
+    let pages = ids
+        .into_iter()
+        .filter_map(|page| {
+            let record = found.get(&page)?;
+            let belongs = record
+                .pointer("/fields/ParentAttachment/value/recordName")
+                .and_then(Value::as_str)
+                == Some(id);
+            let gone = record
+                .pointer("/fields/Deleted/value")
+                .and_then(Value::as_bool)
+                == Some(true);
+            (belongs && !gone).then(|| ScanPage {
+                width: number(record, "Width"),
+                height: number(record, "Height"),
+                id: page,
+            })
+        })
+        .collect();
+    Ok(AttachmentInfo {
+        id: id.to_string(),
+        kind: "scan",
+        filename: None,
+        title: decoded(record, "TitleEncrypted").or_else(|| decoded(record, "UserTitle")),
+        width: number(record, "Width"),
+        height: number(record, "Height"),
+        size: None,
+        has_preview: record
+            .pointer("/fields/PreviewImages/value")
+            .and_then(Value::as_array)
+            .is_some_and(|a| !a.is_empty()),
+        pages,
+        url: None,
+        uti,
+    })
+}
+
+/// A web address kept in a note: its card's title and address, and Apple's rendering of the
+/// page when it made one. There is no file to fetch: the address is what opens.
+fn link_info(id: &str, uti: String, record: &Value) -> AttachmentInfo {
+    let url = decoded(record, "URLStringEncrypted").or_else(|| {
+        record
+            .pointer("/fields/URLString/value")
+            .and_then(Value::as_str)
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+    });
+    AttachmentInfo {
+        id: id.to_string(),
+        kind: "link",
+        filename: None,
+        title: decoded(record, "TitleEncrypted"),
+        width: number(record, "Width"),
+        height: number(record, "Height"),
+        size: record
+            .pointer("/fields/FileSize/value")
+            .and_then(Value::as_i64),
+        has_preview: record
+            .pointer("/fields/PreviewImages/value")
+            .and_then(Value::as_array)
+            .is_some_and(|a| !a.is_empty()),
+        pages: Vec::new(),
+        url,
+        uti,
+    }
+}
+
+/// The pages of an old scan, in the order Apple shows them: the `"$<uuid>"` names in its
+/// `MergeableDataEncrypted` — base64 over gzip over protobuf, measured 2026-11-16. Nothing
+/// readable is no pages, never a failure: the note then says Apple holds none.
+fn gallery_pages(record: &Value) -> Vec<String> {
+    use base64::Engine;
+    let Some(compressed) = record
+        .pointer("/fields/MergeableDataEncrypted/value")
+        .and_then(Value::as_str)
+        .and_then(|b64| base64::engine::general_purpose::STANDARD.decode(b64).ok())
+    else {
+        return Vec::new();
+    };
+    let Some(plain) = crate::bounded::gunzip(&compressed, 4 * 1024 * 1024) else {
+        return Vec::new();
+    };
+    let mut ids = Vec::new();
+    collect_page_ids(&plain, 0, &mut ids);
+    ids.truncate(MOST_PAGES);
+    ids
+}
+
+/// The most pages one scan is read as: far past any the account held (12 was the most).
+const MOST_PAGES: usize = 200;
+
+/// The `"$<uuid>"` names in a protobuf message, wherever Apple buried them, in the order read.
+/// Only a length-delimited field of exactly Apple's 38 bytes is a page; everything else is
+/// walked into. Depth and count are bounded: a malformed record is no pages, not a hang.
+fn collect_page_ids(buf: &[u8], depth: usize, out: &mut Vec<String>) {
+    if depth > 8 || out.len() >= MOST_PAGES {
+        return;
+    }
+    let mut at = 0usize;
+    while at < buf.len() && out.len() < MOST_PAGES {
+        let Some((key, n)) = varint(&buf[at..]) else {
+            return;
+        };
+        at += n;
+        match key & 7 {
+            0 => {
+                let Some((_, n)) = varint(&buf[at..]) else {
+                    return;
+                };
+                at += n;
+            }
+            1 => at += 8,
+            5 => at += 4,
+            2 => {
+                let Some((len, n)) = varint(&buf[at..]) else {
+                    return;
+                };
+                at += n;
+                let len = usize::try_from(len).unwrap_or(usize::MAX);
+                if at + len > buf.len() {
+                    return;
+                }
+                let part = &buf[at..at + len];
+                at += len;
+                match page_id(part) {
+                    Some(id) if !out.contains(&id) => out.push(id),
+                    Some(_) => {}
+                    None => collect_page_ids(part, depth + 1, out),
+                }
+            }
+            _ => return,
+        }
+    }
+}
+
+/// The id in a page's name: `"$` and a 36-character UUID, exactly as Apple writes it.
+fn page_id(name: &[u8]) -> Option<String> {
+    if name.len() != 38 || name[..2] != *b"\"$" {
+        return None;
+    }
+    let id = std::str::from_utf8(&name[2..]).ok()?;
+    id.chars()
+        .all(|c| c.is_ascii_hexdigit() || c == '-')
+        .then(|| id.to_string())
+}
+
+/// Protobuf's base-128 varint: the value and how many bytes it took.
+fn varint(buf: &[u8]) -> Option<(u64, usize)> {
+    let mut value = 0u64;
+    for (i, &b) in buf.iter().enumerate().take(10) {
+        value |= u64::from(b & 0x7f) << (7 * i);
+        if b & 0x80 == 0 {
+            return Some((value, i + 1));
+        }
+    }
+    None
+}
+
+/// Whether a description kept earlier still says what Apple's type identifier says the
+/// attachment is. A scan or a link read before Skykeep knew those kinds says `file`, and is
+/// read again rather than left a card that cannot open.
+#[must_use]
+pub fn kept_is_current(json: &str) -> bool {
+    #[derive(serde::Deserialize)]
+    struct Kept {
+        uti: String,
+        kind: String,
+    }
+    serde_json::from_str::<Kept>(json).is_ok_and(|kept| kept.kind == kind_of(&kept.uti))
 }
 
 /// Which bytes of an attachment to fetch.
@@ -457,6 +675,8 @@ mod empty_asset_tests {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use wiremock::matchers::{body_string_contains, method, path_regex};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
 
     /// The kinds measured on a real account, each drawn the way Notes draws it.
     #[test]
@@ -478,6 +698,179 @@ mod tests {
             kind_of("dyn.ah62d4rv4ge80455crf0gn3dfs3y0g3puqfy1e4psq6"),
             "file"
         );
+        // Measured: the scans made before iOS 17 are a gallery whose pages are pictures of
+        // their own; a web link is a card, not a file.
+        assert_eq!(kind_of("com.apple.notes.gallery"), "scan");
+        assert_eq!(kind_of("public.url"), "link");
+    }
+
+    fn put_varint(mut value: u64, out: &mut Vec<u8>) {
+        loop {
+            let b = (value & 0x7f) as u8;
+            value >>= 7;
+            if value == 0 {
+                out.push(b);
+                return;
+            }
+            out.push(b | 0x80);
+        }
+    }
+
+    fn varint_field(field: u64, value: u64) -> Vec<u8> {
+        let mut out = Vec::new();
+        put_varint(field << 3, &mut out);
+        put_varint(value, &mut out);
+        out
+    }
+
+    fn bytes_field(field: u64, payload: &[u8]) -> Vec<u8> {
+        let mut out = Vec::new();
+        put_varint((field << 3) | 2, &mut out);
+        put_varint(payload.len() as u64, &mut out);
+        out.extend_from_slice(payload);
+        out
+    }
+
+    /// A gallery's `MergeableDataEncrypted` as Apple writes it: gzip over a protobuf whose
+    /// page objects carry `"$<uuid>"`, in the order the pages are shown (measured 2026-11-16).
+    fn gallery_mergeable(ids: &[&str]) -> String {
+        use base64::Engine;
+        use std::io::Write;
+        let mut body = varint_field(1, 0);
+        body.extend(varint_field(2, 0));
+        for id in ids {
+            let name = format!("\"${id}");
+            let inner = bytes_field(1, &varint_field(1, 0));
+            let mut page = inner;
+            page.extend(bytes_field(2, name.as_bytes()));
+            let three = bytes_field(3, &page);
+            let thirteen = bytes_field(13, &three);
+            body.extend(bytes_field(3, &thirteen));
+        }
+        let mut top = varint_field(1, 0);
+        top.extend(bytes_field(2, &body));
+        let mut encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+        encoder.write_all(&top).unwrap();
+        base64::engine::general_purpose::STANDARD.encode(encoder.finish().unwrap())
+    }
+
+    /// A scan's pages come from the gallery's own data, in Apple's order — not the order the
+    /// children happen to arrive in, which is none at all.
+    #[test]
+    fn a_gallery_lists_its_pages_in_apples_order() {
+        let ids = [
+            "11111111-1111-4111-8111-111111111111",
+            "22222222-2222-4222-8222-222222222222",
+            "33333333-3333-4333-8333-333333333333",
+        ];
+        let record = serde_json::json!({ "fields": {
+            "MergeableDataEncrypted": { "value": gallery_mergeable(&ids) },
+        }});
+        assert_eq!(gallery_pages(&record), ids.map(str::to_string).to_vec());
+        // Nothing readable is no pages, never a panic.
+        assert!(gallery_pages(&serde_json::json!({ "fields": {} })).is_empty());
+        assert!(gallery_pages(&serde_json::json!({ "fields": {
+            "MergeableDataEncrypted": { "value": "not base64!" },
+        }}))
+        .is_empty());
+    }
+
+    /// A description kept before Skykeep knew what a scan or a link is says `file`; it is read
+    /// again rather than left a card that cannot open. A current one is used as it is.
+    #[test]
+    fn a_description_from_before_a_kind_was_known_is_read_again() {
+        for (uti, was, now) in [
+            ("com.apple.notes.gallery", "file", "scan"),
+            ("public.url", "file", "link"),
+            ("public.jpeg", "image", "image"),
+        ] {
+            let kept = format!(r#"{{"id":"A","uti":"{uti}","kind":"{was}"}}"#);
+            assert_eq!(kept_is_current(&kept), was == now);
+            let kept = format!(r#"{{"id":"A","uti":"{uti}","kind":"{now}"}}"#);
+            assert!(kept_is_current(&kept));
+        }
+        assert!(!kept_is_current("{not json"));
+    }
+
+    /// A scan read from Apple: its kind, its title, and its pages in order, each with the size
+    /// Apple keeps for it. A page that belongs to something else is not one of its pages.
+    #[tokio::test]
+    async fn a_scan_is_read_as_its_pages() {
+        use base64::Engine;
+        let b64 = |s: &str| base64::engine::general_purpose::STANDARD.encode(s);
+        let server = MockServer::start().await;
+        let p1 = "11111111-1111-4111-8111-111111111111";
+        let p2 = "22222222-2222-4222-8222-222222222222";
+        let stranger = "44444444-4444-4444-8444-444444444444";
+        let page = |name: &str, parent: &str, w: f64, h: f64| {
+            serde_json::json!({ "recordName": name, "recordType": "Attachment",
+                "recordChangeTag": "t", "fields": {
+                    "UTIEncrypted": { "value": b64("public.jpeg") },
+                    "ParentAttachment": { "value": { "recordName": parent } },
+                    "Width": { "value": w }, "Height": { "value": h },
+                }})
+        };
+        let gallery = serde_json::json!({ "recordName": "GAL", "recordType": "Attachment",
+            "recordChangeTag": "t", "fields": {
+                "UTIEncrypted": { "value": b64("com.apple.notes.gallery") },
+                "TitleEncrypted": { "value": b64("Scan") },
+                "MergeableDataEncrypted": { "value": gallery_mergeable(&[p1, p2, stranger]) },
+                "PreviewImages": { "value": [{ "downloadURL": "x" }] },
+            }});
+        Mock::given(method("POST"))
+            .and(path_regex(r".*/records/lookup$"))
+            .and(body_string_contains("\"GAL\""))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({ "records": [gallery] })))
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path_regex(r".*/records/lookup$"))
+            .and(body_string_contains(p1))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({ "records": [
+                page(p1, "GAL", 1024.0, 768.0),
+                page(p2, "GAL", 800.0, 600.0),
+                page(stranger, "OTHER", 10.0, 10.0),
+            ]})))
+            .mount(&server)
+            .await;
+        let info = info(&reqwest::Client::new(), &server.uri(), vec![], "GAL")
+            .await
+            .expect("a scan");
+        assert_eq!(info.kind, "scan");
+        assert_eq!(info.title.as_deref(), Some("Scan"));
+        assert_eq!(
+            info.pages,
+            vec![
+                ScanPage { id: p1.into(), width: Some(1024.0), height: Some(768.0) },
+                ScanPage { id: p2.into(), width: Some(800.0), height: Some(600.0) },
+            ]
+        );
+    }
+
+    /// A web link in a note is a card with its address, never a file Apple will not hand over.
+    #[tokio::test]
+    async fn a_link_is_read_as_its_address() {
+        use base64::Engine;
+        let b64 = |s: &str| base64::engine::general_purpose::STANDARD.encode(s);
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path_regex(r".*/records/lookup$"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({ "records": [{
+                "recordName": "URL", "recordType": "Attachment", "recordChangeTag": "t",
+                "fields": {
+                    "UTIEncrypted": { "value": b64("public.url") },
+                    "TitleEncrypted": { "value": b64("A page") },
+                    "URLStringEncrypted": { "value": b64("https://example.com/a") },
+                }}]})))
+            .mount(&server)
+            .await;
+        let info = info(&reqwest::Client::new(), &server.uri(), vec![], "URL")
+            .await
+            .expect("a link");
+        assert_eq!(info.kind, "link");
+        assert_eq!(info.title.as_deref(), Some("A page"));
+        assert_eq!(info.url.as_deref(), Some("https://example.com/a"));
+        assert!(info.pages.is_empty());
     }
 
     /// A tag shows the words it was typed as; with only its token, the token behind a `#`.
