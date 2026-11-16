@@ -201,6 +201,24 @@ describe("1. there is always a way to type below", () => {
     expect(attachmentsIn(save)).toEqual([{ at: "Bathroom\n".length, id: "IMG-1" }]);
   });
 
+  it("a line made over the note and then one under it: only one is kept, and nothing is saved", async () => {
+    note("N-BOTH", [
+      { set: {}, pieces: [["￼", { attachment: "IMG-1" }]] },
+      { set: {}, pieces: [["￼", { attachment: "DRAW-1" }]] },
+    ]);
+    await open("N-BOTH");
+    layOut(32);
+    tap(editor(), 180, 14);
+    expect(lines()).toHaveLength(3);
+    layOut(32);
+    tap(editor(), 180, 590);
+    expect(lines()).toHaveLength(3);
+    expect(lines()[0].querySelector(".nf-attachment")).not.toBeNull();
+    expect(caret()).toEqual({ line: 2, offset: 0 });
+    await flush();
+    expect(saves()).toEqual([]);
+  });
+
   it("a note opened and left without typing saves nothing, a tap under it included", async () => {
     await open("DEV-PICTURE");
     layOut();

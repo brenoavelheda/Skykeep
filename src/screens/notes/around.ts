@@ -98,11 +98,16 @@ export function carrySpare(state: EditorState, doc: PMNode): { doc: PMNode; at: 
   return { doc: withLines(doc, place, 0), at: place };
 }
 
-/** A spare line made at `at` (between two lines, or at either end), the caret on it. */
+/** A spare line made at `at` (between two lines, or at either end), the caret on it. One made
+ *  before and still not written on goes: only looked at, it was never the note's. */
 function makeSpare(state: EditorState, at: number): Transaction {
-  const tr = state.tr.insert(at, schema.nodes.paragraph.create());
-  tr.setSelection(TextSelection.create(tr.doc, at + 1));
-  return tr.setMeta(spareKey, at).setMeta("addToHistory", false).scrollIntoView();
+  const tr = state.tr;
+  const old = spareAt(state);
+  if (old !== null) tr.delete(old, old + state.doc.nodeAt(old)!.nodeSize);
+  const place = tr.mapping.map(at);
+  tr.insert(place, schema.nodes.paragraph.create());
+  tr.setSelection(TextSelection.create(tr.doc, place + 1));
+  return tr.setMeta(spareKey, place).setMeta("addToHistory", false).scrollIntoView();
 }
 
 /** Whether `line` ends (or starts) with something that stands on its own: a picture, a table,
