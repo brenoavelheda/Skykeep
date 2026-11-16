@@ -5,7 +5,10 @@ import android.content.Context
 import android.content.Intent
 import android.graphics.Bitmap
 import android.graphics.ImageDecoder
+import android.net.ConnectivityManager
+import android.net.NetworkCapabilities
 import android.net.Uri
+import android.util.Log
 import android.webkit.MimeTypeMap
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
@@ -166,36 +169,74 @@ private fun picture(engine: AccountInterface, cacheDir: File, id: String, parts:
 
 /**
  * A file in a note opened in the phone's app for its kind: its bytes copied into the cache's
- * share folder under its own name and handed over for reading only. False when the file isn't
- * held (offline, not downloaded) or no app on the phone opens it, with `onProblem` told why.
+ * share folder under its own name and handed over for reading only. False when nothing could
+ * be opened, with `onProblem` told the honest reason — offline, no file kept, a kind Skykeep
+ * cannot open, no app for it, or the engine refusing — never "not on the phone yet" for all of
+ * them. The cause is logged by kind and error alone: never a note's text or a file's name.
  */
 suspend fun openAttachmentFile(context: Context, engine: AccountInterface, attachment: OpenedAttachment, onProblem: (String) -> Unit): Boolean {
-  val ready = withContext(Dispatchers.IO) {
-    runCatching {
+  val hand = withContext(Dispatchers.IO) {
+    if (!openableKind(attachment.kind)) {
+      Log.w("Skykeep", "A file in a note isn't a kind Skykeep hands over: kind=${attachment.kind}")
+      return@withContext Handed(AttachmentProblem.Unsupported, null, null, null)
+    }
+    try {
       val info = runCatching { JSONObject(engine.noteAttachmentInfoJson(attachment.id)) }.getOrNull()
       val named = attachment.name.ifBlank { info?.optString("filename").orEmpty() }.ifBlank { info?.optString("title").orEmpty() }
       val name = DriveFiles.safeName(named.ifBlank { "Attachment" })
       val bytes = engine.noteMedia(attachment.id, "file")
-      if (bytes.isEmpty()) return@runCatching null
+      val problem = attachmentProblem(attachment.kind, bytes, null, online(context))
+      if (problem != null || bytes.isEmpty()) {
+        Log.w("Skykeep", "A file in a note had nothing to open: kind=${attachment.kind}")
+        return@withContext Handed(problem ?: AttachmentProblem.NothingToOpen, null, null, null)
+      }
       val file = File(context.cacheDir, "share/${DriveFiles.keyOf(attachment.id)}/$name").also { it.parentFile?.mkdirs() }
       file.writeBytes(bytes)
       val type = name.substringAfterLast('.', "").lowercase().takeIf { it.isNotEmpty() }
         ?.let { MimeTypeMap.getSingleton().getMimeTypeFromExtension(it) } ?: "application/octet-stream"
-      FileProvider.getUriForFile(context, "${context.packageName}.share", file) to type
-    }.getOrNull()
+      Handed(null, null, FileProvider.getUriForFile(context, "${context.packageName}.share", file), type)
+    } catch (e: Exception) {
+      // The engine's own words are redacted of addresses by it; anything else says only what
+      // class it was, so no path (a file's name) reaches the log.
+      val fromEngine = (e as? uniffi.quince_mobile.EngineException.Failed)?.reason
+      Log.w("Skykeep", "A file in a note didn't open: kind=${attachment.kind}, ${fromEngine ?: e.javaClass.simpleName}")
+      Handed(
+        attachmentProblem(attachment.kind, null, fromEngine ?: "failed", online(context)) ?: AttachmentProblem.Failed,
+        fromEngine,
+        null,
+        null,
+      )
+    }
   }
-  if (ready == null) {
-    onProblem("This file isn't on the phone yet. Try again when you're online.")
+  val problem = hand.problem
+  if (problem != null) {
+    onProblem(problem.said(context, hand.reason))
     return false
   }
-  val (uri, type) = ready
-  val view = Intent(Intent.ACTION_VIEW).setDataAndType(uri, type)
+  val uri = hand.uri ?: return false
+  val view = Intent(Intent.ACTION_VIEW).setDataAndType(uri, hand.type)
     .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_ACTIVITY_NEW_TASK)
   return try {
     context.startActivity(view)
     true
   } catch (_: ActivityNotFoundException) {
-    onProblem("No app on this phone opens this kind of file.")
+    Log.w("Skykeep", "No app on this phone opens this kind of file: kind=${attachment.kind}")
+    onProblem(AttachmentProblem.NoApp.said(context))
     false
   }
+}
+
+/** A file ready to hand over, or the honest reason it is not. */
+private class Handed(
+  val problem: AttachmentProblem?,
+  val reason: String?,
+  val uri: Uri?,
+  val type: String?,
+)
+
+/** Whether the phone has a network at all: a failure with none is said as offline. */
+private fun online(context: Context): Boolean {
+  val manager = context.getSystemService(ConnectivityManager::class.java) ?: return true
+  val caps = manager.getNetworkCapabilities(manager.activeNetwork) ?: return false
+  return caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
 }

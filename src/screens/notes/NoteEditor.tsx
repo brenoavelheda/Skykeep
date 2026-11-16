@@ -207,8 +207,96 @@ export function drawMedia(dom: HTMLElement, info: NoteAttachment) {
     return;
   }
   dom.title = t("notes.openNamed", { name });
-  if (info.kind === "image") {
-    // Drawn in the note no larger than the note needs (a phone's photo is 12 to 48 megapixels,
+  if (info.kind === "scan") {
+    // An old scan: a gallery Apple keeps as its pages, each a picture of its own. Drawn as
+    // Notes draws one — every page, in Apple's order — and a page tapped opens full screen.
+    const pages = info.pages ?? [];
+    const stack = document.createElement("span");
+    stack.className = "nf-scan";
+    const nothing = () => {
+      const said = document.createElement("span");
+      said.className = "nf-file-name";
+      said.textContent = t(pages.length ? "notes.scanPagesMissing" : "notes.scanNoPages");
+      dom.className = "nf-attachment is-file is-scan-empty";
+      dom.title = "";
+      dom.replaceChildren(said);
+    };
+    pages.forEach((page, index) => {
+      const img = document.createElement("img");
+      img.className = "nf-scan-page";
+      img.alt = `${t("notes.page")} ${index + 1}`;
+      img.decoding = "async";
+      img.loading = "lazy";
+      img.draggable = false;
+      if (page.width && page.height) {
+        img.width = Math.round(page.width);
+        img.height = Math.round(page.height);
+        img.style.aspectRatio = `${page.width} / ${page.height}`;
+      }
+      img.src = noteMediaSrc(page.id, "preview");
+      img.addEventListener("load", () => window.dispatchEvent(new Event(PICTURE_KEPT_EVENT)), { once: true });
+      // A page that cannot be had is left out; the rest of the scan still shows. None left:
+      // said plainly, never a card that cannot open.
+      img.addEventListener("error", () => {
+        img.remove();
+        if (!stack.querySelector("img")) nothing();
+      });
+      img.addEventListener("click", () =>
+        window.dispatchEvent(
+          new CustomEvent<PictureShown>(PICTURE_EVENT, {
+            detail: { id: page.id, name, src: img.src, whole: noteMediaSrc(page.id, "file") },
+          }),
+        ),
+      );
+      stack.append(img);
+    });
+    if (pages.length) {
+      dom.className = "nf-attachment is-scan";
+      dom.replaceChildren(stack);
+    } else {
+      nothing();
+    }
+  } else if (info.kind === "link") {
+    // A web address in a note: its card, as Apple draws it — the page's rendering, its title
+    // and address. The address is what opens, through the window's one checked way out.
+    const address = info.url ?? null;
+    if (!address) {
+      const said = document.createElement("span");
+      said.className = "nf-file-name";
+      said.textContent = t("notes.linkNoAddress");
+      dom.className = "nf-attachment is-file is-link-empty";
+      dom.title = "";
+      dom.replaceChildren(said);
+    } else {
+      const card = document.createElement("a");
+      card.className = "nf-link";
+      card.href = address;
+      card.title = address;
+      if (info.hasPreview) {
+        const preview = document.createElement("img");
+        preview.className = "nf-link-preview";
+        preview.alt = "";
+        preview.decoding = "async";
+        preview.loading = "lazy";
+        preview.src = noteMediaSrc(info.id, "preview");
+        // No rendering (offline, Apple holds none): the words alone still make the card.
+        preview.addEventListener("error", () => preview.remove());
+        card.append(preview);
+      }
+      const words = document.createElement("span");
+      words.className = "nf-link-words";
+      const title = document.createElement("span");
+      title.className = "nf-link-title";
+      title.textContent = name;
+      const shown = document.createElement("span");
+      shown.className = "nf-link-url";
+      shown.textContent = address;
+      words.append(title, shown);
+      card.append(words);
+      dom.className = "nf-attachment is-link";
+      dom.replaceChildren(card);
+    }
+  } else if (info.kind === "image") {    // Drawn in the note no larger than the note needs (a phone's photo is 12 to 48 megapixels,
     // and a note of them decoded each whole while scrolling); the viewer shows it whole.
     const img = picture("inline", "nf-image");
     // Shown here at once, from the picture already drawn — never a wait on another app — and
@@ -439,7 +527,7 @@ function attachmentView(node: PMNode) {
     },
     ignoreMutation: () => true,
     // A cell's keys, clicks and typing are the cell's, not the note editor's.
-    stopEvent: (e: Event) => Boolean((e.target as HTMLElement | null)?.closest?.(".nf-cell-edit, .nf-image, .nf-doc, .nf-file")),
+    stopEvent: (e: Event) => Boolean((e.target as HTMLElement | null)?.closest?.(".nf-cell-edit, .nf-image, .nf-doc, .nf-file, .nf-scan, .nf-link")),
   };
 }
 
@@ -1103,7 +1191,7 @@ export const NoteEditor = forwardRef<EditorHandle, Props>(function NoteEditor(
           const line = (event.target as HTMLElement).closest?.('p[data-style="103"]') as HTMLElement | null;
           if (!line || !editable) return false;
           // A line holding a table or picture has no circle to press.
-          if (line.querySelector(":scope > .nf-attachment:is(.is-table, .is-image, .is-doc, .is-drawing, .is-table-unread)")) return false;
+          if (line.querySelector(":scope > .nf-attachment:is(.is-table, .is-image, .is-doc, .is-drawing, .is-table-unread, .is-scan, .is-link)")) return false;
           const box = line.getBoundingClientRect();
           const pad = parseFloat(getComputedStyle(line).paddingInlineStart) || 0;
           if (event.clientX - box.left > pad) return false;

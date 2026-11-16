@@ -93,8 +93,32 @@ describe("the note page", () => {
     expect(dev.sent.filter((s) => s.cmd === "note_table_set_cell").map((s) => s.args)).toEqual([{ id: "TABLE-1", row: 1, column: 1, text: "315 cm" }]);
   });
 
-  it("a link tapped while reading is handed to the host; a refused one is not", async () => {
-    await open("DEV-FORMATTED", { editable: false });
+  it("an old scan is drawn as its pages, and a page tapped opens full screen", async () => {
+    await open("DEV-OLD");
+    await settle();
+    const scan = container.querySelector<HTMLElement>(".nf-attachment.is-scan")!;
+    expect(scan).not.toBeNull();
+    const pages = [...scan.querySelectorAll<HTMLImageElement>("img.nf-scan-page")];
+    expect(pages.map((p) => p.getAttribute("src"))).toEqual([
+      "https://appassets.androidplatform.net/note-media/SCAN-P1/preview",
+      "https://appassets.androidplatform.net/note-media/SCAN-P2/preview",
+    ]);
+    act(() => pages[1].click());
+    expect(dev.events("host_open_attachment")).toContainEqual({ id: "SCAN-P2", kind: "image", name: "Passport" });
+  });
+
+  it("a link card opens its address", async () => {
+    await open("DEV-OLD", { editable: false });
+    await settle();
+    const link = container.querySelector<HTMLAnchorElement>("a.nf-link")!;
+    expect(link).not.toBeNull();
+    expect(link.getAttribute("href")).toBe("https://tabuademares.com/tides");
+    expect(link.textContent).toContain("Tide table");
+    act(() => link.click());
+    expect(dev.events("host_open_link")).toContainEqual({ href: "https://tabuademares.com/tides" });
+  });
+
+  it("a link tapped while reading is handed to the host; a refused one is not", async () => {    await open("DEV-FORMATTED", { editable: false });
     await settle();
     const link = [...container.querySelectorAll<HTMLAnchorElement>(".ProseMirror a[href]")].find((a) => a.textContent === "tabuademares.com")!;
     act(() => link.click());

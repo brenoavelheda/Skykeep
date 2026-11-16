@@ -80,7 +80,7 @@ body {
   mask-size: 22px 22px;
 }
 .m-page .note-rich .nf-p[data-style="103"][data-checked="true"]::before { background-size: 22px 22px, auto; }
-.m-page .note-rich .nf-p[data-style="103"]:has(> .nf-attachment:is(.is-table, .is-image, .is-doc, .is-drawing, .is-table-unread)) {
+.m-page .note-rich .nf-p[data-style="103"]:has(> .nf-attachment:is(.is-table, .is-image, .is-doc, .is-drawing, .is-table-unread, .is-scan, .is-link)) {
   padding-block: 0;
   padding-inline-start: calc(var(--indent, 0) * 1.5em);
 }
@@ -98,7 +98,15 @@ body {
 }
 .m-page .note-rich .nf-attachment.is-image,
 .m-page .note-rich .nf-attachment.is-doc,
-.m-page .note-rich .nf-attachment.is-file { margin: 6px 0; }
+.m-page .note-rich .nf-attachment.is-file,
+.m-page .note-rich .nf-attachment.is-scan,
+.m-page .note-rich .nf-attachment.is-link { padding: 0; margin: 6px 0; background: none; border-radius: 0; }
+.m-page .nf-scan { gap: 10px; }
+.m-page .nf-scan-page { border-radius: 12px; cursor: default; }
+.m-page .nf-link { min-height: 56px; padding: 10px; border-radius: 14px; }
+.m-page .nf-link-preview { width: 56px; height: 56px; border-radius: 10px; }
+.m-page .nf-link-title { font-size: 0.9375rem; }
+.m-page .nf-link-url { font-size: 0.8125rem; }
 .m-page .nf-file {
   min-height: 56px;
   max-width: 100%;

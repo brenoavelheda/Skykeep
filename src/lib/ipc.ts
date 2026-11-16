@@ -877,16 +877,22 @@ export type AccountInfo = {
   photoContact?: string | null;
 };
 
+export type NoteScanPage = { id: string; width: number | null; height: number | null };
+
 export type NoteAttachment = {
   id: string;
   uti: string;
-  kind: "image" | "drawing" | "table" | "document" | "audio" | "video" | "inline" | "file";
+  kind: "image" | "drawing" | "table" | "document" | "scan" | "link" | "audio" | "video" | "inline" | "file";
   filename: string | null;
   title: string | null;
   width: number | null;
   height: number | null;
   size: number | null;
   hasPreview: boolean;
+  /** An old scan's pages, in Apple's order: picture attachments of their own. */
+  pages?: NoteScanPage[];
+  /** A web link's address: the card's way out. */
+  url?: string | null;
 };
 
 /** A note attachment's picture — the file itself, or Apple's rendering of it. */
