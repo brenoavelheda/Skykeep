@@ -91,6 +91,8 @@ dependencies {
   implementation(libs.androidx.core.ktx)
   implementation(libs.androidx.lifecycle.runtime.ktx)
   implementation(libs.androidx.activity.compose)
+  // The note page: bundled assets served from the app's own https origin, no file access.
+  implementation(libs.androidx.webkit)
   // Background work: syncs, photo backup, Drive saves and Send to iPhone before Android 14.
   implementation(libs.androidx.work.runtime)
 
@@ -114,6 +116,8 @@ dependencies {
   // Local tests: jUnit, coroutines, Android runner
   testImplementation(libs.junit)
   testImplementation(libs.kotlinx.coroutines.test)
+  // org.json as the phone has it: unit tests would otherwise get Android's stubbed copy.
+  testImplementation(libs.org.json)
 
   // Instrumented tests: jUnit rules and runners
   androidTestImplementation(libs.androidx.test.core)
@@ -169,6 +173,16 @@ val engineLicences = tasks.register<Exec>("engineLicences") {
   )
 }
 tasks.named("preBuild") { dependsOn(bindings, engineLicences) }
+
+// The note page: the repository's own web project built with the notes editor's entry
+// (vite.mobile.config.ts), into the APK's assets. Generated and git-ignored, like the engine's
+// libraries; `npm ci` at the top of the repository is the developer's, as for the desktop.
+val notesEditor = tasks.register<Exec>("buildNotesEditor") {
+  workingDir = repo
+  val npm = if (System.getProperty("os.name").orEmpty().startsWith("Windows", ignoreCase = true)) listOf("cmd", "/c", "npm") else listOf("npm")
+  commandLine(npm + listOf("run", "build:mobile-notes"))
+}
+tasks.named("preBuild") { dependsOn(bindings, engineLicences, notesEditor) }
 
 // The app's libraries and their licences, written into the app (res/raw/aboutlibraries.json)
 // for Settings › Open-source licences. From the build's own dependency list, offline: nothing is
