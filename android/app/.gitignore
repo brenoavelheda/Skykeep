@@ -1,1 +1,3 @@
 /build
+# The notes editor page, built from src/mobile/notes by `npm run build:mobile-notes`.
+/src/main/assets/notes-editor/
