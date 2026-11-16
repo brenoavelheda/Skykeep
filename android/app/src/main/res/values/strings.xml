@@ -9,4 +9,12 @@
     <string name="widget_quick_add_description">Add a new iCloud reminder in one tap and see your open count</string>
     <string name="widget_agenda_name">Agenda</string>
     <string name="widget_agenda_description">Upcoming events from your synced iCloud calendars</string>
+    <!-- A file in a note that did not open: one sentence for each reason, so the person knows
+         what to do next (Online, 2026-11-16). -->
+    <string name="note_attachment_offline">You\'re offline. This file will open when your phone is back online.</string>
+    <string name="note_attachment_nothing">Apple doesn\'t keep a file for this attachment, so there\'s nothing to open.</string>
+    <string name="note_attachment_unsupported">Skykeep can\'t open this kind of attachment.</string>
+    <string name="note_attachment_no_app">No app on this phone opens this kind of file.</string>
+    <string name="note_attachment_failed">Skykeep couldn\'t open this file: %1$s</string>
+    <string name="note_attachment_failed_unknown">something went wrong. Try again.</string>
 </resources>
