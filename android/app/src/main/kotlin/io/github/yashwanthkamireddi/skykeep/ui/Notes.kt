@@ -84,6 +84,21 @@ import uniffi.quince_mobile.NDoc
 import uniffi.quince_mobile.NFolder
 import uniffi.quince_mobile.NItem
 import uniffi.quince_mobile.NSpan
+import io.github.yashwanthkamireddi.skykeep.ui.notes.NoteListPrefs
+import io.github.yashwanthkamireddi.skykeep.ui.notes.NoteOrder
+import io.github.yashwanthkamireddi.skykeep.ui.notes.NoteSection
+import io.github.yashwanthkamireddi.skykeep.ui.notes.NoteSort
+import io.github.yashwanthkamireddi.skykeep.ui.notes.NoteThumb
+import io.github.yashwanthkamireddi.skykeep.ui.notes.highlighted
+import io.github.yashwanthkamireddi.skykeep.ui.notes.notePictures
+import io.github.yashwanthkamireddi.skykeep.ui.notes.sections
+import io.github.yashwanthkamireddi.skykeep.ui.notes.sorted
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.selection.selectable
+import androidx.compose.foundation.selection.selectableGroup
+import androidx.compose.material3.RadioButton
+import androidx.compose.material3.Switch
+import androidx.compose.ui.text.AnnotatedString
 
 /** Apple's id for Recently Deleted (quince-core's TRASH_FOLDER). */
 private const val TRASH = "TrashFolder-CloudKit"
@@ -144,6 +159,10 @@ fun NotesPage(engine: AccountInterface) {
   var newFolder by remember { mutableStateOf(false) }
   var renaming by remember { mutableStateOf<NFolder?>(null) }
   var dropping by remember { mutableStateOf<NFolder?>(null) }
+  // How the list is ordered, kept across launches; each note's first picture held on the phone.
+  var order by remember { mutableStateOf(NoteListPrefs.read(context)) }
+  var viewing by remember { mutableStateOf(false) }
+  var pictures by remember { mutableStateOf<Map<String, String>>(emptyMap()) }
 
   fun reason(t: Throwable) = (t as? uniffi.quince_mobile.EngineException.Failed)?.reason ?: "Notes couldn't be read."
 
@@ -155,16 +174,18 @@ fun NotesPage(engine: AccountInterface) {
     return scope.launch {
       val p = place
       try {
-        val (f, n) = withContext(Dispatchers.IO) {
+        val (f, n, pics) = withContext(Dispatchers.IO) {
           val f = engine.noteFolders()
           val n = when {
             query.isNotBlank() -> engine.searchNotes(query)
             p is NPlace.Folder -> engine.notes(p.guid)
             else -> emptyList()
           }
-          f to n
+          // The rows' small pictures are a nicety: the list shows without them when they can't be read.
+          val pics = if (n.isEmpty()) emptyMap() else runCatching { notePictures(engine.notePicturesJson()) }.getOrDefault(emptyMap())
+          Triple(f, n, pics)
         }
-        folders = f; notes = n; problem = null
+        folders = f; notes = n; pictures = pics; problem = null
       } catch (e: kotlinx.coroutines.CancellationException) {
         throw e
       } catch (t: Throwable) {
@@ -205,15 +226,19 @@ fun NotesPage(engine: AccountInterface) {
               Icon(painterResource(R.drawable.ic_edit), contentDescription = "New Note", tint = MaterialTheme.colorScheme.primary)
             }
           }
-          // A folder of the person's own (not All iCloud, Notes' own, or Recently Deleted): Rename, Delete.
+          // Every folder: View Options. A folder of the person's own (not All iCloud, Notes' own,
+          // or Recently Deleted) also Rename, Delete.
           val own = folders.firstOrNull { it.guid == folder?.guid && !it.trash }
-          if (own != null) {
+          if (folder != null) {
             var menu by remember { mutableStateOf(false) }
             Box {
               IconButton(onClick = { menu = true }) { Icon(painterResource(R.drawable.ic_more), contentDescription = "Folder options") }
               DropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
-                DropdownMenuItem(text = { Text("Rename Folder") }, onClick = { menu = false; renaming = own })
-                DropdownMenuItem(text = { Text("Delete Folder", color = MaterialTheme.colorScheme.error) }, onClick = { menu = false; dropping = own })
+                DropdownMenuItem(text = { Text("View Options") }, onClick = { menu = false; viewing = true })
+                if (own != null) {
+                  DropdownMenuItem(text = { Text("Rename Folder") }, onClick = { menu = false; renaming = own })
+                  DropdownMenuItem(text = { Text("Delete Folder", color = MaterialTheme.colorScheme.error) }, onClick = { menu = false; dropping = own })
+                }
               }
             }
           }
@@ -228,11 +253,12 @@ fun NotesPage(engine: AccountInterface) {
         if (folder == null && query.isBlank()) {
           FolderList(folders, onNewFolder = { newFolder = true }) { place = it }
         } else {
-          NoteList(notes, grouped = query.isBlank()) { n -> place = NPlace.Open(n.guid, folder ?: NPlace.Folder(null, "All iCloud")) }
+          NoteList(engine, notes, order, query, pictures) { n -> place = NPlace.Open(n.guid, folder ?: NPlace.Folder(null, "All iCloud")) }
         }
       }
     }
   }
+  if (viewing) ViewOptions(order, onDismiss = { viewing = false }) { order = it; NoteListPrefs.write(context, it) }
   if (newFolder) NameDialog("New Folder", "", onDismiss = { newFolder = false }) { name ->
     newFolder = false
     folderChange("Making $name") { engine.noteFolderCreate(name) }
@@ -316,45 +342,77 @@ private fun changed(at: Long?): String {
   }
 }
 
-/** Which section a note's last change puts it in, as Notes groups them. */
-private fun bucket(n: NItem, today: LocalDate): String {
-  if (n.pinned) return "Pinned"
-  val d = n.modifiedAt?.let { Instant.ofEpochSecond(it).atZone(ZoneId.systemDefault()).toLocalDate() } ?: return "Earlier"
-  return when {
-    d == today -> "Today"
-    d == today.minusDays(1) -> "Yesterday"
-    d.isAfter(today.minusDays(7)) -> "Previous 7 Days"
-    d.isAfter(today.minusDays(30)) -> "Previous 30 Days"
-    d.year == today.year -> d.month.getDisplayName(java.time.format.TextStyle.FULL, java.util.Locale.getDefault())
-    else -> d.year.toString()
-  }
+/**
+ * Sort By and Group By Date, as the desktop's View menu offers them; each choice applied and
+ * kept at once. Grouping is not offered by title, which Notes never groups.
+ */
+@Composable
+private fun ViewOptions(order: NoteOrder, onDismiss: () -> Unit, change: (NoteOrder) -> Unit) {
+  AlertDialog(
+    onDismissRequest = onDismiss,
+    title = { Text("View Options") },
+    text = {
+      Column(Modifier.selectableGroup()) {
+        Text("Sort By", style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(bottom = 4.dp))
+        for (by in NoteSort.entries) {
+          Row(
+            Modifier.fillMaxWidth().heightIn(min = 48.dp).selectable(selected = order.by == by, role = Role.RadioButton) { change(order.copy(by = by)) },
+            verticalAlignment = Alignment.CenterVertically,
+          ) {
+            RadioButton(selected = order.by == by, onClick = null)
+            Spacer(Modifier.width(12.dp))
+            Text(by.label, style = MaterialTheme.typography.bodyLarge)
+          }
+        }
+        if (order.by != NoteSort.Title) {
+          HorizontalDivider(Modifier.padding(vertical = 8.dp), color = MaterialTheme.colorScheme.outlineVariant)
+          Row(
+            Modifier.fillMaxWidth().heightIn(min = 48.dp).toggleable(order.groupByDate, role = Role.Switch) { change(order.copy(groupByDate = it)) },
+            verticalAlignment = Alignment.CenterVertically,
+          ) {
+            Text("Group By Date", style = MaterialTheme.typography.bodyLarge, modifier = Modifier.weight(1f))
+            Switch(checked = order.groupByDate, onCheckedChange = null)
+          }
+        }
+      }
+    },
+    confirmButton = { TextButton(onClick = onDismiss) { Text("Done") } },
+  )
 }
 
 /**
- * Notes as the desktop lists them: grouped by when they changed (Pinned first), each section one
- * card, each note its title in bold over its time and first line. Search results are one list.
+ * Notes as the desktop lists them: in the chosen order, grouped by date unless that is off
+ * (Pinned first), each section one card, each note its title in bold over its time and first
+ * line, its first picture at the end when the phone holds one. Search results are one list,
+ * the searched words lit in each title and line.
  */
 @Composable
-private fun NoteList(notes: List<NItem>, grouped: Boolean, open: (NItem) -> Unit) {
-  val today = LocalDate.now()
-  val sections = if (grouped) notes.groupBy { bucket(it, today) }.toList() else listOf("" to notes)
+private fun NoteList(engine: AccountInterface, notes: List<NItem>, order: NoteOrder, query: String, pictures: Map<String, String>, open: (NItem) -> Unit) {
+  val shown = remember(notes, order, query) {
+    if (query.isBlank()) sections(notes, order) else listOf(NoteSection("", sorted(notes, order)))
+  }
+  // The searched words in Notes' yellow, the text on it at full strength so it reads in both themes.
+  val mark = SpanStyle(background = NotesYellow.copy(alpha = 0.35f), color = MaterialTheme.colorScheme.onSurface)
   LazyColumn(contentPadding = PaddingValues(start = 16.dp, end = 16.dp, bottom = 24.dp)) {
     if (notes.isEmpty()) item {
       Text("No notes", style = MaterialTheme.typography.bodyLarge, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(horizontal = 4.dp, vertical = 24.dp))
     }
-    for ((name, list) in sections) {
+    for ((name, list) in shown) {
       if (name.isNotEmpty()) item(key = "h-$name") { SectionLabel(name) }
       groupItems(list, key = { "n-${it.guid}" }, inset = 16) { n ->
-          Column(Modifier.fillMaxWidth().clickable { open(n) }.padding(horizontal = 16.dp, vertical = 12.dp)) {
-            Text(n.title.ifBlank { "New Note" }, style = MaterialTheme.typography.titleMedium, maxLines = 1, overflow = TextOverflow.Ellipsis)
-            Row {
-              Text(changed(n.modifiedAt), style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurface)
-              Spacer(Modifier.width(8.dp))
-              Text(
-                if (n.locked) "Locked" else n.snippet?.lineSequence()?.firstOrNull { it.isNotBlank() } ?: "No additional text",
-                style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, overflow = TextOverflow.Ellipsis,
-              )
+          Row(Modifier.fillMaxWidth().clickable { open(n) }.padding(horizontal = 16.dp, vertical = 12.dp), verticalAlignment = Alignment.CenterVertically) {
+            Column(Modifier.weight(1f)) {
+              Text(highlighted(n.title.ifBlank { "New Note" }, query, mark), style = MaterialTheme.typography.titleMedium, maxLines = 1, overflow = TextOverflow.Ellipsis)
+              Row {
+                Text(changed(n.modifiedAt), style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurface)
+                Spacer(Modifier.width(8.dp))
+                Text(
+                  if (n.locked) AnnotatedString("Locked") else highlighted(n.snippet?.lineSequence()?.firstOrNull { it.isNotBlank() } ?: "No additional text", query, mark),
+                  style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, overflow = TextOverflow.Ellipsis,
+                )
+              }
             }
+            pictures[n.guid]?.let { NoteThumb(engine, it, Modifier.padding(start = 12.dp)) }
           }
       }
     }
