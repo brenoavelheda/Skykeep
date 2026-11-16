@@ -44,7 +44,7 @@ function lockedDown(): Plugin {
   return {
     name: "skykeep-phone-csp",
     apply: "build",
-    transformIndexHtml: (html) => html.replace("<head>", `<head>\n    <meta http-equiv="Content-Security-Policy" content="${policy}" />`),
+    transformIndexHtml: (html) => html.replace('<meta charset="UTF-8" />', `<meta charset="UTF-8" />\n    <meta http-equiv="Content-Security-Policy" content="${policy}" />`),
   };
 }
 
@@ -88,6 +88,8 @@ export default defineConfig({
     emptyOutDir: true,
     target: "chrome100",
     sourcemap: false,
+    // One file, read from the APK, never fetched: its size is not a page load's.
+    chunkSizeWarningLimit: 900,
   },
   test: {
     environment: "jsdom",

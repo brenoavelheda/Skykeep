@@ -165,10 +165,11 @@ export function installDevHost(opts: { delayMs?: number; page?: Host } = {}): De
 
 /** The browser's dev page: a fake host, and a note opened as the query asks. */
 export function startDevHost() {
-  installDevHost({ delayMs: 120 });
+  // Kept on the window for poking at from the console: what the page sent, the notes held.
+  (window as unknown as { skykeepDevHost: DevHost }).skykeepDevHost = installDevHost({ delayMs: 120 });
   const q = new URLSearchParams(window.location.search);
   const which = q.get("note") ?? "formatted";
-  const guid = which === "new" ? null : `DEV-${which.toUpperCase()}`;
+  const guid = which === "new" ? null : which === "readonly" ? "DEV-FORMATTED" : `DEV-${which.toUpperCase()}`;
   const theme = q.get("theme") === "dark" ? "dark" : "light";
   const open = () =>
     window.skykeepNotes?.open({ guid, folderGuid: null, editable: which !== "readonly", locked: which === "locked", found: q.getAll("found"), theme });
