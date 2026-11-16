@@ -9,18 +9,19 @@ beforeEach(() => {
   sent = [];
   window.SkykeepHost = { post: (json) => void sent.push(JSON.parse(json)) };
 });
+const last = () => sent[sent.length - 1];
 const answer = (ok: boolean, payload: unknown) => host.resolve(sent[sent.length - 1].id, ok, JSON.stringify(payload));
 
 describe("tauri shim", () => {
   it("invoke becomes the envelope and resolve settles it", async () => {
     const saved = api.noteSave("N1", "Milk\nEggs", "Milk", null, null);
-    expect(sent.at(-1)).toMatchObject({ cmd: "note_save", args: { guid: "N1", body: "Milk\nEggs", base: "Milk", runs: null, baseRuns: null } });
-    expect(sent.at(-1)!.id).toBeGreaterThan(0);
+    expect(last()).toMatchObject({ cmd: "note_save", args: { guid: "N1", body: "Milk\nEggs", base: "Milk", runs: null, baseRuns: null } });
+    expect(last().id).toBeGreaterThan(0);
     answer(true, "Milk\nEggs");
     await expect(saved).resolves.toBe("Milk\nEggs");
 
     const cell = invoke("note_table_set_cell", { id: "T1", row: 0, column: 1, text: "x" });
-    expect(sent.at(-1)).toMatchObject({ cmd: "note_table_set_cell", args: { id: "T1", row: 0, column: 1, text: "x" } });
+    expect(last()).toMatchObject({ cmd: "note_table_set_cell", args: { id: "T1", row: 0, column: 1, text: "x" } });
     answer(false, "Apple refused the cell");
     await expect(cell).rejects.toBe("Apple refused the cell");
   });

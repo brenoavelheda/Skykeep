@@ -21,6 +21,7 @@ import { RowMenu } from "../components/RowMenu";
 import { Spinner } from "../components/Spinner";
 import { FormattedBody, type Run } from "./notes/Formatted";
 import { carryRuns, runsFit, sameFormatting } from "./notes/rich";
+import { titled } from "./notes/titled";
 import { NoteEditor, PICTURE_KEPT_EVENT, refreshTables, type EditorHandle, type EditorStatus } from "./notes/NoteEditor";
 import { FormatPanel } from "./notes/FormatPanel";
 import { NotePicture } from "./notes/NotePicture";
@@ -40,23 +41,6 @@ import { foundRanges, queryWords } from "./notes/found";
 import { useI18n } from "../lib/i18n";
 
 const ALL = "__all__";
-
-/** A new note's first line set as its title, as Notes sets it, unless it was given a style. */
-function titled(text: string, runs: Run[]): Run[] {
-  const end = text.indexOf("\n");
-  const firstLine = end < 0 ? text.length : end + 1;
-  const out: Run[] = [];
-  let at = 0;
-  for (const r of runs) {
-    const from = at;
-    at += r.length;
-    if (from >= firstLine || r.style !== null) { out.push(r); continue; }
-    const inside = Math.min(at, firstLine) - from;
-    out.push({ ...r, length: inside, style: 0 });
-    if (r.length > inside) out.push({ ...r, length: r.length - inside });
-  }
-  return out;
-}
 
 /** Apple's Recently Deleted, by the record name that is the same in every language. */
 const TRASH_FOLDER = "TrashFolder-CloudKit";
