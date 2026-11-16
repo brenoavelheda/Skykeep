@@ -2232,6 +2232,63 @@ mod tests {
         );
     }
 
+    /// A picture's line cut and pasted further down the note in one edit: the picture goes with
+    /// it, by Apple's own run, in one place — not left as an object character where it landed.
+    #[test]
+    fn a_picture_line_moved_keeps_the_picture() {
+        const ID: &str = "00000000-0000-4000-8000-0000000000A2";
+        let mut doc = crate::ckdocument::text_to_base64("Fix check\nfirst\nlast\n");
+        doc = crate::ckdocument::insert_attachment_in_base64(
+            &doc,
+            "Fix check\nfirst\n".encode_utf16().count() as u64,
+            ID,
+            "public.jpeg",
+            7,
+        )
+        .expect("placed")
+        .0;
+        let shown = crate::ckdocument::shown_text_from_base64(&doc).unwrap();
+        let runs = crate::ckdocument::shown_runs_from_base64(&doc);
+        // Its line cut from after "first" and pasted at the end of the note.
+        let moved = "Fix check\nfirst\nlast\n\u{FFFC}\n";
+        let moved_runs = [
+            Run {
+                length: 10,
+                style: Some(0),
+                ..Run::default()
+            },
+            plain(6),
+            plain(5),
+            attached(ID),
+            plain(1),
+        ];
+        let (kept, written) = rewrite_for_save(
+            &doc,
+            &shown,
+            Some(&shown),
+            moved,
+            Some(&moved_runs),
+            Some(&runs),
+            &[],
+        )
+        .unwrap()
+        .expect("the move is written");
+        assert_eq!(kept, moved);
+        let back = crate::ckdocument::runs_from_base64(&written);
+        let at: Vec<usize> = (0..back.len())
+            .filter(|&i| back[i].attachment.is_some())
+            .collect();
+        assert_eq!(at.len(), 1, "the picture is in one place");
+        assert_eq!(back[at[0]].attachment.as_deref(), Some(ID));
+        assert_eq!(back[at[0]].length, 1);
+        let units: Vec<u16> = kept.encode_utf16().collect();
+        let before: u64 = back[..at[0]].iter().map(|r| r.length).sum();
+        assert_eq!(units[before as usize], 0xFFFC, "where the picture landed");
+        assert!(crate::ckdocument::attachments_sound_in_base64(
+            &doc, &written
+        ));
+    }
+
     /// A locked note is never offered for editing: its text is sealed, and nothing here
     /// could write it back as the phone keeps it.
     #[test]
