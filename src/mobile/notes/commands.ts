@@ -15,7 +15,8 @@ export function runCommand(editor: EditorHandle, name: string, arg?: unknown): b
     case "italic":
     case "underline":
     case "strike":
-      editor.toggleMark(name);
+      // The bar's own mark: chosen with nothing selected it holds for what is typed next.
+      editor.toggleHeldMark(name);
       return true;
     case "style":
       if (arg !== null && arg !== undefined && !(typeof arg === "number" && STYLES.includes(arg))) return false;
@@ -41,7 +42,7 @@ export function runCommand(editor: EditorHandle, name: string, arg?: unknown): b
       return true;
     case "colour":
       if (arg !== null && arg !== undefined && !(typeof arg === "number" && Number.isInteger(arg) && arg >= 1 && arg <= 5)) return false;
-      editor.setColour(typeof arg === "number" ? arg : null);
+      editor.setHeldColour(typeof arg === "number" ? arg : null);
       return true;
     case "link":
       editor.openLink();

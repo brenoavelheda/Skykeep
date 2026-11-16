@@ -34,6 +34,8 @@ export type SessionEditor = {
   flushChange: () => void;
   current: () => { text: string; runs: Run[] } | null;
   caret: () => number | null;
+  /** Whether a caret was placed in the note at all: without one, a file goes in at its end. */
+  caretPlaced: () => boolean;
 };
 
 export type SessionEvents = {
@@ -189,7 +191,11 @@ export class NoteSession {
     }
     const shown = this.editor?.current();
     const text = shown?.text ?? this.body;
-    const at = this.editor?.caret() ?? text?.length ?? 0;
+    // A caret the person placed is honoured; with none (a note only opened, a checklist circle
+    // tapped) the file goes in at the end of the note, on a line of its own — never at offset
+    // 0, which put it above the title and changed it. The engine adds the newline when the
+    // place is mid-line.
+    const at = this.editor?.caretPlaced() === true ? (this.editor.caret() ?? text?.length ?? 0) : (text?.length ?? 0);
     this.attaching = true;
     this.events.changed();
     try {
@@ -357,3 +363,5 @@ export class NoteSession {
     this.events.changed();
   }
 }
+
+

@@ -174,5 +174,66 @@ describe("the note page", () => {
     expect(window.skykeepNotes!.command("explode")).toBe(false);
     expect(window.skykeepNotes!.command("undo")).toBe(true);
   });
+
+  /** The caret put in a line as a finger puts it: the browser's selection there, which the
+   *  editor takes in. */
+  function caretAt(p: Element) {
+    const dom = container.querySelector<HTMLElement>(".ProseMirror")!;
+    const range = document.createRange();
+    range.selectNodeContents(p);
+    range.collapse(false);
+    const sel = document.getSelection()!;
+    sel.removeAllRanges();
+    sel.addRange(range);
+    act(() => void dom.dispatchEvent(new KeyboardEvent("keydown", { key: "q", ctrlKey: true, bubbles: true })));
+  }
+
+  function lastLine() {
+    const lines = container.querySelectorAll(".ProseMirror p");
+    const p = lines[lines.length - 1];
+    caretAt(p);
+    return p;
+  }
+
+  async function typeLine(p: Element, text: string) {
+    const node = p.appendChild(document.createTextNode(text));
+    const range = document.createRange();
+    range.setStart(node, node.length);
+    range.collapse(true);
+    const sel = document.getSelection()!;
+    sel.removeAllRanges();
+    sel.addRange(range);
+    await act(async () => {
+      for (let i = 0; i < 8; i++) await new Promise((r) => setTimeout(r, 10));
+    });
+  }
+
+  it("a format chosen with nothing selected holds through a re-read, for the whole word", async () => {
+    await open("DEV-FORMATTED");
+    await settle();
+    const p = lastLine();
+
+    // Bold chosen on the empty line at the end, with nothing selected.
+    expect(window.skykeepNotes!.command("bold")).toBe(true);
+    await settle();
+
+    // The note changed on another device meanwhile, and the page is asked to read it again as
+    // it is after every sync: the re-read is taken in, the caret stays on its line.
+    const device = dev.notes.get("DEV-FORMATTED")!;
+    const more = "Written on the iPhone.\n";
+    device.text += more;
+    device.runs = [...device.runs.slice(0, -1), { ...device.runs[device.runs.length - 1], length: device.runs[device.runs.length - 1].length + more.length }];
+    await act(async () => window.skykeepNotes!.refresh());
+    await settle();
+    expect(p.isConnected).toBe(true);
+    caretAt(p);
+
+    // The keys the person typed next, the keyboard's capital included.
+    await typeLine(p, "Boldword");
+    await settle();
+
+    const typed = [...container.querySelectorAll<HTMLElement>(".ProseMirror p")].find((line) => line.textContent === "Boldword");
+    expect(typed?.innerHTML).toBe("<strong>Boldword</strong>");
+  });
 });
 

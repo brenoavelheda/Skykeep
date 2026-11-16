@@ -114,7 +114,10 @@ there rather than following it; the format bar's link button then edits or remov
   `moveDown`, `quote`, `colour` (arg 1–5 or `null`), `link` (opens the Add Link sheet), `undo`,
   `redo`, `focus`, `blur`, `lockNow` (forgets the passwords, `note_lock_forget`, and shows the
   password form again). Format commands focus the editor, as the desktop's do; the host's
-  buttons must not take the focus themselves, so the keyboard stays up.
+  buttons must not take the focus themselves, so the keyboard stays up. A mark or colour
+  chosen with nothing selected holds for everything typed next — through a save landing, a
+  status report, a re-read taken in, or the keyboard replacing the letter it typed — until it
+  is chosen off or the caret leaves the line.
 - `flush(token)` — sends what is typed now (the editor's last keys, the note made if it is new,
   the save) and then posts `host_flushed {token, unsaved}`. Asked before leaving the note, on
   pause/background, before rotation teardown. The page also saves by itself on
@@ -124,8 +127,9 @@ there rather than following it; the format bar's link button then edits or remov
   failed earlier is sent again.
 - `attach(path)` — the page flushes, calls `note_attach_file` at its caret with the text on
   screen as `base`, then reads the note again and shows it with the file in place; the note
-  cannot be typed in meanwhile. On a new note with nothing typed it posts `host_error`
-  instead.
+  cannot be typed in meanwhile. A caret the person placed is honoured; with none (the note
+  only opened, a checklist circle tapped) the file goes in at the end of the note, on a line
+  of its own. On a new note with nothing typed it posts `host_error` instead.
 - `resolve(id, ok, payloadJson)` — answers a command (above).
 
 ## The save session (what the host can rely on)

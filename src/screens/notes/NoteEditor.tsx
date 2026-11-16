@@ -5,7 +5,7 @@ import { Decoration, DecorationSet, EditorView } from "prosemirror-view";
 import { history, undo, redo, undoDepth, redoDepth } from "prosemirror-history";
 import { keymap } from "prosemirror-keymap";
 import { baseKeymap, splitBlockAs, toggleMark, chainCommands } from "prosemirror-commands";
-import { Fragment, Slice, type Node as PMNode } from "prosemirror-model";
+import { Fragment, Slice, type Mark, type Node as PMNode } from "prosemirror-model";
 import type { Run } from "./Formatted";
 import { checklistMove, fromDoc, listNumbers, LIST_STYLES, schema, STYLE, tableCells, toDoc } from "./rich";
 import { MOVE_CHECKED_KEY } from "./model";
@@ -475,6 +475,14 @@ export type EditorHandle = {
   /** Lines to checklist items, or — when they all are — back to plain lines. */
   toggleChecklist: () => void;
   toggleMark: (mark: "bold" | "italic" | "underline" | "strike") => void;
+  /**
+   * The phone's format bar: a mark chosen with nothing selected holds for everything typed
+   * next — through a save landing, a status report, a re-read, or the keyboard replacing the
+   * letter it typed — until it is chosen off again or the caret leaves the line.
+   */
+  toggleHeldMark: (mark: "bold" | "italic" | "underline" | "strike") => void;
+  /** The same for Notes' text colour on the caret (null: none). */
+  setHeldColour: (colour: number | null) => void;
   /** Take in text Apple now holds, keeping the cursor where it was as near as it can. */
   replace: (text: string, runs: Run[] | null) => void;
   focus: () => void;
@@ -482,6 +490,10 @@ export type EditorHandle = {
   flushChange: () => void;
   /** Add Link (Command-K): the box for the selection, or for the link the cursor is in. */
   openLink: () => void;
+  /** Whether the caret was placed in the note at all — tapped or typed into — as against a
+   *  note only opened: the desktop's `caret()` gives 0 for both, and a file added there went
+   *  in before the title. */
+  caretPlaced: () => boolean;
   /** What the editor holds this moment: its text and how it is set. */
   current: () => { text: string; runs: Run[] } | null;
   /** Where the cursor is, in UTF-16 units of `current().text`; null with no editor. */
@@ -812,6 +824,22 @@ export const NoteEditor = forwardRef<EditorHandle, Props>(function NoteEditor(
    * the note is left, so nothing typed can be missed.
    */
   const later = useRef<number | null>(null);
+  /**
+   * The format chosen with nothing selected, and the line it was chosen on: the phone's bar's
+   * marks, held for everything typed next. ProseMirror keeps stored marks for one transaction
+   * only, so a save landing, a re-read taken in, or the keyboard putting back a letter it took
+   * away dropped them; held here they stay until the bar takes them off or the caret leaves.
+   */
+  const held = useRef<{ marks: Mark[]; at: number } | null>(null);
+  /** Whether a caret was placed in the note (a tap, a key), as against none at all. */
+  const placed = useRef(false);
+  /** Holds `marks` for what is typed next on the caret's line; nothing held clears it. */
+  const holdMarks = (marks: readonly Mark[] | null) => {
+    const v = view.current;
+    if (!v) return;
+    const { selection } = v.state;
+    held.current = marks && marks.length && selection.empty ? { marks: [...marks], at: selection.$from.start() } : null;
+  };
   /** The Add Link box, while it is open; `linking` is read by the editor's blur. */
   const [linkAsk, setLinkAsk] = useState<LinkAsk | null>(null);
   const linking = useRef(false);
@@ -931,7 +959,40 @@ export const NoteEditor = forwardRef<EditorHandle, Props>(function NoteEditor(
       },
       dispatchTransaction(tr: Transaction) {
         const before = v.state;
-        const next = before.apply(tr);
+        const holding = held.current;
+        // Where the line the format was chosen on starts, once this transaction is in.
+        const heldAt = holding ? tr.mapping.map(holding.at, -1) : 0;
+        if (holding) {
+          // The format chosen with nothing selected is still in force on its line: the keys
+          // typed next take it, and the bar stays lit, whatever the transaction came from.
+          const sel = tr.selection;
+          if (holding.marks.length && sel.empty && sel.$from.start() === heldAt) tr.setStoredMarks(holding.marks);
+          else held.current = null;
+        }
+        const keep = held.current;
+        let next = before.apply(tr);
+        // What the keys — or the keyboard taking a letter back and putting its capital there —
+        // put in the chosen line is set the way the person chose. Never a paste or a quiet
+        // step of our own, and nothing outside that line.
+        if (keep && keep.marks.length && tr.docChanged && !tr.getMeta("uiEvent") && tr.getMeta("addToHistory") !== false) {
+          const line = next.doc.resolve(heldAt);
+          const start = before.doc.content.findDiffStart(next.doc.content);
+          const end = before.doc.content.findDiffEnd(next.doc.content);
+          const from = line.parent.isTextblock && start !== null ? Math.max(start, heldAt) : 0;
+          const to = line.parent.isTextblock && end ? Math.min(end.b, line.end()) : 0;
+          if (to > from) {
+            const add = next.tr;
+            for (const mark of keep.marks) if (!next.doc.rangeHasMark(from, to, mark.type)) add.addMark(from, to, mark);
+            if (add.steps.length) {
+              add.setStoredMarks(keep.marks).setMeta("addToHistory", false);
+              next = next.apply(add);
+            }
+          }
+        }
+        if (keep) {
+          const sel = next.selection;
+          held.current = sel.empty && sel.$from.start() === heldAt ? { marks: keep.marks, at: heldAt } : null;
+        }
         v.updateState(next);
         // Only a change to what the note holds is an edit. A step that leaves the document as
         // it was — text dragged and dropped where it lay, a mark set where it already is —
@@ -1005,6 +1066,11 @@ export const NoteEditor = forwardRef<EditorHandle, Props>(function NoteEditor(
           return true;
         },
         click: (_vw, event) => openLinkAt(event),
+        keydown: () => {
+          // Typed in with no tap before it: the caret is the person's all the same.
+          placed.current = true;
+          return false;
+        },
         blur: () => {
           if (later.current !== null) report();
           // Into the Add Link box: still editing, and the note is left only once it closes.
@@ -1013,6 +1079,7 @@ export const NoteEditor = forwardRef<EditorHandle, Props>(function NoteEditor(
         },
         // A checklist item's circle ticks it, as a tap does on the phone.
         mousedown: (vw, event) => {
+          placed.current = true;
           const line = (event.target as HTMLElement).closest?.('p[data-style="103"]') as HTMLElement | null;
           if (!line || !editable) return false;
           // A line holding a table or picture has no circle to press.
@@ -1032,6 +1099,7 @@ export const NoteEditor = forwardRef<EditorHandle, Props>(function NoteEditor(
     view.current = v;
     tell(v.state);
     if (autoFocus) {
+      placed.current = true;
       v.focus();
       v.dispatch(v.state.tr.setSelection(TextSelection.atEnd(v.state.doc)));
     }
@@ -1114,6 +1182,24 @@ export const NoteEditor = forwardRef<EditorHandle, Props>(function NoteEditor(
       toggleMark(schema.marks[mark])(v.state, v.dispatch);
       v.focus();
     },
+    toggleHeldMark: (mark) => {
+      const v = view.current;
+      if (!v) return;
+      // Nothing held while the command runs, then whatever the toggle left — on or off — is
+      // what the keys typed next are set to.
+      held.current = null;
+      toggleMark(schema.marks[mark])(v.state, v.dispatch);
+      holdMarks(v.state.storedMarks);
+      v.focus();
+    },
+    setHeldColour: (c) => {
+      const v = view.current;
+      if (!v) return;
+      held.current = null;
+      colour(c)(v.state, v.dispatch);
+      holdMarks(v.state.storedMarks);
+      v.focus();
+    },
     replace: (nextText, nextRuns) => {
       const v = view.current;
       if (!v) return;
@@ -1159,8 +1245,16 @@ export const NoteEditor = forwardRef<EditorHandle, Props>(function NoteEditor(
       }
       tr.setMeta("addToHistory", false);
       // Taken in quietly: what Apple holds is not an edit to send back.
+      const keepHeld = held.current;
+      if (keepHeld) {
+        // A format chosen with nothing selected is not the re-read's to take away: the caret
+        // stays on its line, and so does the format, on what is typed next.
+        if (tr.selection.empty) tr.setStoredMarks(keepHeld.marks);
+        else held.current = null;
+      }
       const next = v.state.apply(tr);
       v.updateState(next);
+      if (held.current) held.current = { ...held.current, at: held.current.marks.length ? next.selection.$from.start() : held.current.at };
       if (keep) keep(tr.mapping);
       tell(next);
     },
@@ -1170,6 +1264,7 @@ export const NoteEditor = forwardRef<EditorHandle, Props>(function NoteEditor(
       if (later.current !== null) report();
     },
     current: () => (view.current ? fromDoc(view.current.state.doc) : null),
+    caretPlaced: () => placed.current,
     caret: () => {
       const v = view.current;
       if (!v) return null;
