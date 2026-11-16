@@ -34,6 +34,8 @@ pub struct NItem {
     pub title: String,
     pub snippet: Option<String>,
     /// Unix seconds.
+    pub created_at: Option<i64>,
+    /// Unix seconds.
     pub modified_at: Option<i64>,
     pub pinned: bool,
     pub locked: bool,
@@ -125,6 +127,7 @@ fn item(n: quince_core::notes::Note) -> NItem {
         folder_guid: n.folder_guid,
         title: n.title,
         snippet: n.snippet,
+        created_at: n.created_at,
         modified_at: n.modified_at,
         pinned: n.pinned,
         locked: n.locked,
@@ -435,5 +438,26 @@ mod tests {
             ticked.iter().map(|r| r.checked).collect::<Vec<_>>(),
             vec![Some(true), Some(true), Some(true), Some(false)]
         );
+    }
+
+    /// A note in a list carries when it was made: the list's Date Created sort has nothing else
+    /// to go on.
+    #[test]
+    fn items_carry_created_at() {
+        let n = quince_core::notes::Note {
+            guid: "N".into(),
+            folder_guid: None,
+            title: "N".into(),
+            snippet: None,
+            body: None,
+            locked: false,
+            pinned: false,
+            created_at: Some(42),
+            modified_at: Some(43),
+            editable: true,
+            etag: None,
+            runs: None,
+        };
+        assert_eq!(item(n).created_at, Some(42));
     }
 }

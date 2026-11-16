@@ -419,15 +419,7 @@ async fn reminder_image_shown(app: &tauri::AppHandle, attachment: &str) -> Resul
 /// A note attachment's id as part of a file name in `note-media`: letters, digits and dashes,
 /// so an id from a request is never a path.
 fn media_file_id(id: &str) -> String {
-    id.chars()
-        .map(|c| {
-            if c.is_ascii_alphanumeric() || c == '-' {
-                c
-            } else {
-                '_'
-            }
-        })
-        .collect()
+    quince_icloud::note_media::file_id(id)
 }
 
 /// A note attachment's picture, from disk when it has been fetched before, from Apple when
@@ -437,41 +429,23 @@ async fn note_media_cached(
     id: &str,
     part: quince_icloud::note_media::Part,
 ) -> Result<Vec<u8>, String> {
-    let safe = media_file_id(id);
-    let name = match part {
-        quince_icloud::note_media::Part::Preview => "preview",
-        quince_icloud::note_media::Part::File => "file",
-        quince_icloud::note_media::Part::Drawing => "drawing",
-    };
-    let path = state_dir(app)
-        .join("note-media")
-        .join(format!("{safe}-{name}"));
-    if let Ok(bytes) = tokio::fs::read(&path).await {
-        return Ok(bytes);
-    }
-    let (http, root, params) = {
-        let auth = app.state::<Auth>();
-        let client = auth.client.lock().await;
-        let root = client
-            .session()
-            .service_url("ckdatabasews")
-            .ok_or("no CloudKit")?;
-        (client.http().clone(), root, client.service_params())
-    };
-    let bytes = quince_icloud::note_media::bytes(&http, &root, params, id, part)
+    let cache = quince_icloud::note_media::Cache::new(state_dir(app).join("note-media"));
+    cache
+        .get_or_fetch(id, quince_icloud::note_media::part_name(part), || async {
+            let (http, root, params) = {
+                let auth = app.state::<Auth>();
+                let client = auth.client.lock().await;
+                let root = client
+                    .session()
+                    .service_url("ckdatabasews")
+                    .ok_or("no CloudKit")?;
+                (client.http().clone(), root, client.service_params())
+            };
+            quince_icloud::note_media::bytes(&http, &root, params, id, part)
+                .await
+                .map_err(|e| e.to_string())
+        })
         .await
-        .map_err(|e| e.to_string())?;
-    if let Some(dir) = path.parent() {
-        tokio::fs::create_dir_all(dir).await.ok();
-    }
-    // Whole or not at all: written beside it and renamed in, so a second request for the same
-    // picture (a drawing's light and dark ink, the viewer) never reads half a file — which
-    // the window took for a broken picture and showed as a file for the rest of the session.
-    let part = path.with_extension("part");
-    if tokio::fs::write(&part, &bytes).await.is_ok() {
-        let _ = tokio::fs::rename(&part, &path).await;
-    }
-    Ok(bytes)
 }
 
 /// A note's picture as the window can draw it: a HEIC original (what an iPhone takes) made a

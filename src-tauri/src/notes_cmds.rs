@@ -9,45 +9,15 @@
 
 use crate::{Auth, Data, UiResult};
 use quince_icloud::notes::attach::Attached;
-use quince_icloud::notes::locked::Unlocked;
-use std::collections::HashMap;
-use std::sync::Mutex;
+use quince_icloud::notes::locked::{Passwords, Unlocked};
 use tauri::State;
 
-/// A password held in memory, wiped when let go of.
-struct Secret(Vec<u8>);
-
-impl Drop for Secret {
-    fn drop(&mut self) {
-        self.0.fill(0);
-    }
-}
-
 /// The password that opened each locked note this session, by note.
-static PASSWORDS: Mutex<Option<HashMap<String, Secret>>> = Mutex::new(None);
-
-fn remembered(guid: &str) -> Option<String> {
-    PASSWORDS
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .as_ref()?
-        .get(guid)
-        .and_then(|s| String::from_utf8(s.0.clone()).ok())
-}
-
-fn remember(guid: &str, password: &str) {
-    PASSWORDS
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .get_or_insert_with(HashMap::new)
-        .insert(guid.to_string(), Secret(password.as_bytes().to_vec()));
-}
+static PASSWORDS: Passwords = Passwords::new();
 
 /// Every remembered password let go of: on sign-out, or when the window locks notes again.
 pub fn forget_passwords() {
-    *PASSWORDS
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner) = None;
+    PASSWORDS.forget_all();
 }
 
 /// Open a locked note: its text and formatting. With no password, the one that opened it
@@ -65,26 +35,17 @@ pub async fn note_unlock(
     password: Option<String>,
     auth: State<'_, Auth>,
 ) -> UiResult<Unlocked> {
-    let password = password
-        .filter(|p| !p.is_empty())
-        .or_else(|| remembered(&guid))
-        .ok_or("Enter this note’s password to open it.")?;
+    let password = PASSWORDS.for_unlock(&guid, password)?;
     let (http, root, params) = crate::cloudkit_context(&auth).await?;
     match quince_icloud::notes::locked::unlock_cloudkit(&http, &root, params, &guid, &password)
         .await
     {
         Ok(opened) => {
-            remember(&guid, &password);
+            PASSWORDS.remember(&guid, &password);
             Ok(opened)
         }
         Err(e) => {
-            if let Some(map) = PASSWORDS
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .as_mut()
-            {
-                map.remove(&guid);
-            }
+            PASSWORDS.forget_one(&guid);
             Err(e.to_string())
         }
     }
