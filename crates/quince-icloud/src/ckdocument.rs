@@ -992,6 +992,46 @@ fn restyle(run: &[u8], change: ParagraphChange) -> Option<Vec<u8>> {
 /// it had, and one new here — or a line split off another — is given its own.
 #[must_use]
 pub fn set_runs(original: &[u8], runs: &[Run]) -> Option<Vec<u8>> {
+    set_runs_restoring(original, runs, &[])
+}
+
+/// [`set_runs`], with the attachments in `restoring` — id and type identifier, from the
+/// records Apple still holds — written as a phone writes one: on its line, in the attachment
+/// paragraph, so an Undo of a delete puts the picture back rather than an object character
+/// with nothing behind it. One Apple still refers to is written from its own run, so a line
+/// moved or restored keeps its picture. A character that is not alone on its line is left as
+/// it was.
+#[must_use]
+pub fn set_runs_restoring(
+    original: &[u8],
+    runs: &[Run],
+    restoring: &[(String, String)],
+) -> Option<Vec<u8>> {
+    set_runs_with(original, &held_runs(original), runs, restoring)
+}
+
+/// The run Apple gives each attachment it refers to, by id: in a save, an attachment the editor
+/// still shows is written from it — its paragraph, its stamp, and every field this app does not
+/// know — so a picture whose line moved, or came back with Undo, keeps its picture.
+fn held_runs(document: &[u8]) -> std::collections::HashMap<Vec<u8>, Vec<u8>> {
+    let mut held: std::collections::HashMap<Vec<u8>, Vec<u8>> = std::collections::HashMap::new();
+    for run in debug_attribute_runs(document) {
+        if let Some(id) = bytes_field(&run, ATTACHMENT_INFO).and_then(|info| bytes_field(&info, 1))
+        {
+            held.entry(id).or_insert(run);
+        }
+    }
+    held
+}
+
+/// [`set_runs_restoring`], with `held` — Apple's own run for each attachment, from the document
+/// as it was before this text edit — read from the document the runs are set on otherwise.
+fn set_runs_with(
+    original: &[u8],
+    held: &std::collections::HashMap<Vec<u8>, Vec<u8>>,
+    runs: &[Run],
+    restoring: &[(String, String)],
+) -> Option<Vec<u8>> {
     let plain = inflate(original)?;
     let text = std::str::from_utf8(field_at(&plain, TEXT_PATH)?).ok()?;
     let units: Vec<u16> = text.encode_utf16().collect();
@@ -1042,6 +1082,49 @@ pub fn set_runs(original: &[u8], runs: &[Run]) -> Option<Vec<u8>> {
     cuts.sort_unstable();
     cuts.dedup();
 
+    // A picture put back where it was (an Undo of a delete), or one whose line moved: its line
+    // is written as a phone writes one — the attachment's own run, its paragraph the attachment
+    // paragraph. From Apple's own run where Apple still refers to it (so its stamp and every
+    // field this app does not know go with it); from the record iCloud holds where the delete's
+    // save had taken the reference away — the caller has checked that it is there.
+    let mut attachment_lines: std::collections::HashMap<u64, (Vec<u8>, Vec<u8>)> =
+        std::collections::HashMap::new();
+    {
+        let mut start = 0u64;
+        for &end in &ends {
+            let stop = if units.get(end.saturating_sub(1) as usize) == Some(&u16::from(b'\n')) {
+                end - 1
+            } else {
+                end
+            };
+            if stop == start + 1 && units.get(start as usize) == Some(&0xFFFC) {
+                if let Some(id) = run_at(runs, start).and_then(|r| r.attachment) {
+                    if let Some(run) = held.get(id.as_bytes()) {
+                        let paragraph = bytes_field(run, 2).unwrap_or_default();
+                        let mut piece = set_varint_field(run, 1, 1)?;
+                        piece = without_field(&piece, 2)?;
+                        if !paragraph.is_empty() {
+                            piece.extend(length_delimited(2, &paragraph));
+                        }
+                        attachment_lines.insert(end, (piece, paragraph));
+                    } else if let Some((_, uti)) = restoring.iter().find(|(back, _)| *back == id) {
+                        let mut uuid = [0u8; 16];
+                        uuid.copy_from_slice(uuid::Uuid::new_v4().as_bytes());
+                        let paragraph = attachment_paragraph(&uuid);
+                        attachment_lines.insert(
+                            end,
+                            (
+                                attachment_run(&id, uti, now_seconds(), &paragraph),
+                                paragraph,
+                            ),
+                        );
+                    }
+                }
+            }
+            start = end;
+        }
+    }
+
     let mut pieces: Vec<Vec<u8>> = Vec::new();
     let mut seen_items: Vec<Vec<u8>> = Vec::new();
     let mut paragraph_item: Option<(u64, Vec<u8>)> = None;
@@ -1064,6 +1147,14 @@ pub fn set_runs(original: &[u8], runs: &[Run]) -> Option<Vec<u8>> {
         let inline = run_at(runs, a)?;
         let end = *ends.iter().find(|&&e| e > a)?;
         let para = run_at(runs, end - 1)?;
+
+        // The restored picture's own character: the run a phone gives it, joined to nothing.
+        if b - a == 1 && units.get(a as usize) == Some(&0xFFFC) {
+            if let Some((piece, _)) = attachment_lines.get(&end) {
+                pieces.push(piece.clone());
+                continue;
+            }
+        }
 
         let mut piece = set_varint_field(&template, 1, b - a)?;
         // The paragraph: its style, indent and checklist item.
@@ -1109,6 +1200,11 @@ pub fn set_runs(original: &[u8], runs: &[Run]) -> Option<Vec<u8>> {
         } else {
             p = without_field(&p, 5)?;
         }
+        // A restored picture's line is the attachment paragraph a phone gives one, so Notes
+        // reads it as a line holding an attachment and nothing else.
+        if let Some((_, paragraph)) = attachment_lines.get(&end) {
+            p = paragraph.clone();
+        }
         piece = without_field(&piece, 2)?;
         if !p.is_empty() {
             piece.extend(length_delimited(2, &p));
@@ -1152,9 +1248,12 @@ pub fn set_runs(original: &[u8], runs: &[Run]) -> Option<Vec<u8>> {
 
     // An attachment has one place in one note. Notes on a phone lagged and crashed over a note
     // this app had saved with a table referenced twice and references to deleted tables, so
-    // nothing is written unless every reference is one the note already had, used once, on a
-    // single attachment character.
-    attachments_sound(&old, &pieces, &units)?;
+    // nothing is written unless every reference is one the note already had — or one an Undo
+    // puts back, which Apple still holds — used once, on a single attachment character.
+    let allowing: Vec<&[u8]> = restoring.iter().map(|(id, _)| id.as_bytes()).collect();
+    let mut trusted = old.clone();
+    trusted.extend(held.values().cloned());
+    attachments_sound_allowing(&trusted, &pieces, &units, &allowing)?;
 
     let mut out = Vec::with_capacity(note.len() + 64);
     let mut reader = Reader::new(note);
@@ -1187,7 +1286,7 @@ pub fn set_runs(original: &[u8], runs: &[Run]) -> Option<Vec<u8>> {
 /// `old`: each one already in `old`, none used twice, and each on a run of exactly one
 /// object-replacement character.
 fn attachments_sound(old: &[Vec<u8>], new: &[Vec<u8>], units: &[u16]) -> Option<()> {
-    attachments_sound_with(old, new, units, None)
+    attachments_sound_allowing(old, new, units, &[])
 }
 
 /// [`attachments_sound`], with one attachment `added` allowed that `old` did not have — a
@@ -1198,14 +1297,36 @@ fn attachments_sound_with(
     units: &[u16],
     added: Option<&[u8]>,
 ) -> Option<()> {
-    let id_of =
-        |run: &[u8]| bytes_field(run, ATTACHMENT_INFO).and_then(|info| bytes_field(&info, 1));
-    let mut had: std::collections::HashSet<Vec<u8>> = old.iter().filter_map(|r| id_of(r)).collect();
     if let Some(added) = added {
-        if !had.insert(added.to_vec()) {
+        let id_of =
+            |run: &[u8]| bytes_field(run, ATTACHMENT_INFO).and_then(|info| bytes_field(&info, 1));
+        // A fresh id: one Apple's copy already uses is a second reference to it, not a new one.
+        if old.iter().filter_map(|r| id_of(r)).any(|id| id == added) {
             return None;
         }
+        attachments_sound_allowing(old, new, units, &[added])
+    } else {
+        attachments_sound_allowing(old, new, units, &[])
     }
+}
+
+/// [`attachments_sound`], except that an id in `allowing` (an attachment this save puts back,
+/// which Apple's copy no longer refers to but still holds) is allowed too — and must then
+/// appear exactly once, so a restored picture stands in one place.
+fn attachments_sound_allowing(
+    old: &[Vec<u8>],
+    new: &[Vec<u8>],
+    units: &[u16],
+    allowing: &[&[u8]],
+) -> Option<()> {
+    let id_of =
+        |run: &[u8]| bytes_field(run, ATTACHMENT_INFO).and_then(|info| bytes_field(&info, 1));
+    let had: std::collections::HashSet<Vec<u8>> = old.iter().filter_map(|r| id_of(r)).collect();
+    let allowed: std::collections::HashSet<&[u8]> = allowing
+        .iter()
+        .copied()
+        .filter(|id| !had.contains(*id))
+        .collect();
     let mut used = std::collections::HashSet::new();
     let mut at = 0usize;
     for run in new {
@@ -1213,7 +1334,7 @@ fn attachments_sound_with(
         if let Some(id) = id_of(run) {
             if length != 1
                 || units.get(at) != Some(&0xFFFC)
-                || !had.contains(&id)
+                || !(had.contains(&id) || allowed.contains(id.as_slice()))
                 || !used.insert(id)
             {
                 return None;
@@ -1221,7 +1342,7 @@ fn attachments_sound_with(
         }
         at += length;
     }
-    if added.is_some_and(|added| !used.contains(added)) {
+    if allowed.iter().any(|id| !used.contains(*id)) {
         return None;
     }
     Some(())
@@ -1264,6 +1385,54 @@ pub fn attachments_sound_in_base64(original: &str, edited: &str) -> bool {
         &units,
     )
     .is_some()
+}
+
+/// [`attachments_sound_in_base64`], except that the ids in `restored` — attachments this save
+/// puts back where they were, which Apple's copy no longer refers to but still holds its
+/// records for (an Undo of a delete) — are allowed too, each exactly once, on its own object
+/// character.
+#[must_use]
+pub fn attachments_restored_sound_in_base64(
+    original: &str,
+    edited: &str,
+    restored: &[String],
+) -> bool {
+    let (Ok(old), Ok(new)) = (B64.decode(original.trim()), B64.decode(edited.trim())) else {
+        return false;
+    };
+    let Some(text) = inflate(&new)
+        .and_then(|plain| field_at(&plain, TEXT_PATH).map(<[u8]>::to_vec))
+        .and_then(|t| String::from_utf8(t).ok())
+    else {
+        return false;
+    };
+    let units: Vec<u16> = text.encode_utf16().collect();
+    let allowing: Vec<&[u8]> = restored.iter().map(String::as_bytes).collect();
+    attachments_sound_allowing(
+        &debug_attribute_runs(&old),
+        &debug_attribute_runs(&new),
+        &units,
+        &allowing,
+    )
+    .is_some()
+}
+
+/// The attachments `runs` refer to that `original` (a note document as the CloudKit field
+/// carries it) no longer does: what a save would put back — the picture an Undo restored after
+/// the delete's save had gone — and what must be checked against Apple before it is written.
+#[must_use]
+pub fn attachments_not_held_in_base64(original: &str, runs: &[Run]) -> Vec<String> {
+    let held: std::collections::HashSet<String> = runs_from_base64(original)
+        .into_iter()
+        .filter_map(|r| r.attachment)
+        .collect();
+    let mut out: Vec<String> = Vec::new();
+    for id in runs.iter().filter_map(|r| r.attachment.as_ref()) {
+        if !held.contains(id) && !out.contains(id) {
+            out.push(id.clone());
+        }
+    }
+    out
 }
 
 /// [`attachments_sound_in_base64`] for a write that adds one attachment: `edited` may refer
@@ -1345,6 +1514,13 @@ fn attachment_paragraph(uuid: &[u8; 16]) -> Vec<u8> {
     let mut p = varint_field(3, 1);
     p.extend(length_delimited(9, uuid));
     p
+}
+
+/// Now, in unix seconds: the stamp a phone puts on an attachment it places (run field 13).
+fn now_seconds() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs())
 }
 
 /// The run Notes gives an attachment's one character, as a phone writes it, fields in the
@@ -1515,9 +1691,25 @@ pub fn insert_attachment_in_base64(
 /// then the runs set as [`set_runs`] sets them. Over the base64 a CloudKit field carries.
 #[must_use]
 pub fn replace_rich_in_base64(original: &str, text: &str, runs: &[Run]) -> Option<String> {
+    replace_rich_restoring_in_base64(original, text, runs, &[])
+}
+
+/// [`replace_rich_in_base64`], with the attachments in `restoring` (id and type identifier,
+/// from the records Apple still holds) put back where their characters stand: an Undo of a
+/// delete writes the picture again, not an object character with nothing behind it.
+#[must_use]
+pub fn replace_rich_restoring_in_base64(
+    original: &str,
+    text: &str,
+    runs: &[Run],
+    restoring: &[(String, String)],
+) -> Option<String> {
     let raw = B64.decode(original.trim()).ok()?;
+    // Apple's own run for each attachment, read before the text edit rebuilds the runs: a
+    // picture the save keeps is written from these, not from a place in the old text.
+    let held = held_runs(&raw);
     let replaced = gzip(&replace_text(&raw, text)?);
-    Some(B64.encode(gzip(&set_runs(&replaced, runs)?)))
+    Some(B64.encode(gzip(&set_runs_with(&replaced, &held, runs, restoring)?)))
 }
 
 /// Each paragraph of `text` — its text with its newline — and the runs over it.
