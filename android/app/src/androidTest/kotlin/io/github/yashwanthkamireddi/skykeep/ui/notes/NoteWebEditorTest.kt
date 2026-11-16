@@ -4,8 +4,13 @@ import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.graphics.Canvas
 import android.graphics.Paint
+import android.content.Intent
+import android.content.IntentFilter
 import android.content.res.Configuration
 import android.os.ParcelFileDescriptor
+import android.os.SystemClock
+import android.view.InputDevice
+import android.view.MotionEvent
 import android.view.View
 import android.view.ViewGroup
 import android.view.WindowManager
@@ -328,14 +333,23 @@ class NoteWebEditorTest {
   @Test
   fun an_outside_address_is_refused() {
     opened("Lemon\n")
+    // The address goes to the phone's own app for it; held here, so no browser is started on
+    // the device (a browser left behind went on to hang, and its "isn't responding" dialog took
+    // the focus from every test after it: no keyboard came up).
+    val handedOut = InstrumentationRegistry.getInstrumentation()
+      .addMonitor(IntentFilter(Intent.ACTION_VIEW).apply { addDataScheme("https") }, null, true)
+    try {
+      js("location.href = 'https://example.com/'")
+      Thread.sleep(1_000)
 
-    js("location.href = 'https://example.com/'")
-    Thread.sleep(1_000)
-
-    assertTrue(
-      js("location.href"),
-      js("location.href").contains("appassets.androidplatform.net"),
-    )
+      assertTrue(
+        js("location.href"),
+        js("location.href").contains("appassets.androidplatform.net"),
+      )
+      assertEquals("the address was not handed to the phone's own app", 1, handedOut.hits)
+    } finally {
+      InstrumentationRegistry.getInstrumentation().removeMonitor(handedOut)
+    }
   }
 
   @Test
@@ -692,18 +706,70 @@ class NoteWebEditorTest {
   private fun atEnd(): String =
     "(() => { const p = document.querySelector('.note-editor'); return p.scrollTop + p.clientHeight >= p.scrollHeight - 1; })()"
 
-  /** The note's pane scrolled to its very end by a finger, as a person does: swipes up until
-   *  the pane goes no further. */
-  private fun swipeToEnd() {
-    val pane = box(".note-editor")
-    val x = (pane[0] + pane[2]) / 2
-    val (sx, from) = onScreen(x, pane[1] + (pane[3] - pane[1]) * 0.8)
-    val (_, to) = onScreen(x, pane[1] + (pane[3] - pane[1]) * 0.2)
-    repeat(12) {
-      if (js(atEnd()) == "true") return
-      shell("input swipe $sx $from $sx $to 250")
-      Thread.sleep(500)
+  /**
+   * A finger dragged up the pane from `fromY` to `toY` (CSS pixels), held still at the end and
+   * lifted: the page scrolls by the drag and does not fling on. Its events go in one by one,
+   * each waited for (UiAutomation): `input swipe` under load now and then delivered only its
+   * down and its up, 14ms apart, and the page took that for a tap where the finger lifted — on
+   * the picture, which opened it.
+   */
+  private fun drag(x: Double, fromY: Double, toY: Double) {
+    val (sx, y0) = onScreen(x, fromY)
+    val (_, y1) = onScreen(x, toY)
+    val ui = InstrumentationRegistry.getInstrumentation().uiAutomation
+    val down = SystemClock.uptimeMillis()
+    var at = down
+    // A finger on the phone's own touchscreen, as the screen reports one.
+    val screen = InputDevice.getDeviceIds().firstOrNull { id ->
+      InputDevice.getDevice(id)?.supportsSource(InputDevice.SOURCE_TOUCHSCREEN) == true
+    } ?: 0
+    val finger = MotionEvent.PointerProperties().apply { id = 0; toolType = MotionEvent.TOOL_TYPE_FINGER }
+    fun send(action: Int, y: Int) {
+      val point = MotionEvent.PointerCoords().apply { this.x = sx.toFloat(); this.y = y.toFloat(); pressure = 1f; size = 1f }
+      val event = MotionEvent.obtain(down, at, action, 1, arrayOf(finger), arrayOf(point), 0, 0, 1f, 1f, screen, 0, InputDevice.SOURCE_TOUCHSCREEN, 0)
+      assertTrue("the touch was not taken", ui.injectInputEvent(event, true))
+      event.recycle()
     }
+    send(MotionEvent.ACTION_DOWN, y0)
+    val steps = 20
+    for (i in 1..steps) {
+      SystemClock.sleep(16)
+      at += 16
+      send(MotionEvent.ACTION_MOVE, y0 + (y1 - y0) * i / steps)
+    }
+    repeat(8) {
+      SystemClock.sleep(16)
+      at += 16
+      send(MotionEvent.ACTION_MOVE, y1)
+    }
+    at += 16
+    send(MotionEvent.ACTION_UP, y1)
+  }
+
+  /** Waits for the pane's scroll to come to rest: the same position read twice, 150ms apart. */
+  private fun waitForScrollAtRest() {
+    var last = js("document.querySelector('.note-editor').scrollTop")
+    val end = System.currentTimeMillis() + 5_000
+    while (System.currentTimeMillis() < end) {
+      Thread.sleep(150)
+      val now = js("document.querySelector('.note-editor').scrollTop")
+      if (now == last) return
+      last = now
+    }
+    throw AssertionError("the pane never came to rest (scrollTop $last)")
+  }
+
+  /** The note's pane scrolled to its very end by a finger, as a person does: drags up until the
+   *  pane goes no further, then waits for it to be at rest before anything is read off it. */
+  private fun swipeToEnd() {
+    repeat(12) {
+      waitForScrollAtRest()
+      if (js(atEnd()) == "true") return
+      val pane = box(".note-editor")
+      val x = (pane[0] + pane[2]) / 2
+      drag(x, pane[1] + (pane[3] - pane[1]) * 0.8, pane[1] + (pane[3] - pane[1]) * 0.2)
+    }
+    waitForScrollAtRest()
     assertEquals("the pane did not reach its end", "true", js(atEnd()))
   }
 
@@ -750,6 +816,7 @@ class NoteWebEditorTest {
     assertTrue("the picture is not taller than the pane: ${picture0.toList()} in ${pane0.toList()}", picture0[3] - picture0[1] > pane0[3] - pane0[1])
 
     swipeToEnd()
+    assertTrue("scrolling opened the picture: ${fake.opened}", fake.opened.isEmpty())
     val picture = box("img.nf-image")
     val pane = box(".note-editor")
     val room = pane[3] - picture[3]

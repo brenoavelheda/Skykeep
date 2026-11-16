@@ -407,7 +407,9 @@ class FormatBarTest {
 
     // Something typed before, so that a save of it lands while the format is chosen.
     typeThroughKeyboard("firstline")
-    waitForJs("document.querySelector('.ProseMirror')?.innerText ?? ''") { it.contains("firstline") }
+    // The keyboard may capitalise the line's first letter (Gboard does, now and then, at the
+    // start of a line); either way it is the line typed.
+    waitForJs("document.querySelector('.ProseMirror')?.innerText ?? ''") { it.contains("firstline", ignoreCase = true) }
     key(66) // Enter: a new, empty line
     compose.waitForIdle()
 
