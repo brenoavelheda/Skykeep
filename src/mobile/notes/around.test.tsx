@@ -28,7 +28,10 @@ beforeEach(() => {
     unmount = mountNotesPage(container);
   });
 });
-afterEach(() => {
+afterEach(async () => {
+  // What the test typed is sent now, to its own host: a save still on its way would land in
+  // the next test's.
+  await flush();
   act(() => unmount?.());
   container.remove();
   document.body.replaceChildren();
@@ -451,5 +454,160 @@ describe("4. a long press chooses a picture without opening it", () => {
     await settle();
     press(container.querySelector<HTMLImageElement>('img[src$="/note-media/IMG-1/inline"]')!);
     expect(editor().querySelector("[data-chosen]")).toBeNull();
+  });
+});
+
+/**
+ * F4: a note that ends in a picture taller than the screen. The room under the note is a box of
+ * its own under the editor (`.m-room`), so a tap there is never a tap on the picture; and a
+ * caret put for writing stays in view while the page moves under it (the picture landing at
+ * its full height, the keyboard coming up).
+ */
+describe("F4. room under a tall picture", () => {
+  it("the note being written has room under it, and a tap there gives a line after the picture", async () => {
+    await open("DEV-PICTURE");
+    const shown = dev.notes.get("DEV-PICTURE")!.text;
+    layOut();
+    const room = container.querySelector<HTMLElement>(".note-editor > .m-room");
+    expect(room).not.toBeNull();
+
+    tap(room!, 180, 700);
+
+    expect(lines()).toHaveLength(4);
+    expect(lines()[3].textContent).toBe("");
+    expect(caret()).toEqual({ line: 3, offset: 0 });
+    expect(dev.events("host_keyboard")).toHaveLength(1);
+    await flush();
+    expect(saves()).toEqual([]);
+    await typeIn(lines()[3], "Grout");
+    await flush();
+    const save = saves()[saves().length - 1];
+    expect(save.body).toBe(`${shown}\nGrout`);
+    expect(attachmentsIn(save)).toEqual([{ at: shown.length - 1, id: "IMG-1" }]);
+  });
+
+  it("a tap in the room under a note that ends in text puts the caret at its end, no line added", async () => {
+    await open("DEV-MEDIA");
+    layOut();
+    const count = lines().length;
+    tap(container.querySelector(".m-room")!, 180, 700);
+    expect(lines()).toHaveLength(count);
+    expect(caret()).toEqual({ line: count - 1, offset: "Ask about delivery.".length });
+    await flush();
+    expect(saves()).toEqual([]);
+  });
+
+  it("a note only read has no room to write in", async () => {
+    await act(async () => window.skykeepNotes!.open({ guid: "DEV-PICTURE", folderGuid: null, editable: false, locked: false, found: [], theme: "light" }));
+    await settle();
+    expect(container.querySelector(".m-room")).toBeNull();
+  });
+});
+
+describe("F4. the caret put for writing stays in view", () => {
+  /** What a ResizeObserver is told to watch, and a way to say they changed size. */
+  let watched: { callback: ResizeObserverCallback; targets: Element[] }[] = [];
+  class FakeResizeObserver {
+    entry: { callback: ResizeObserverCallback; targets: Element[] };
+    constructor(callback: ResizeObserverCallback) {
+      this.entry = { callback, targets: [] };
+      watched.push(this.entry);
+    }
+    observe(target: Element) {
+      this.entry.targets.push(target);
+    }
+    unobserve() {}
+    disconnect() {
+      this.entry.targets = [];
+    }
+  }
+  const resized = () => act(() => {
+    for (const w of watched) if (w.targets.length) w.callback([], w as unknown as ResizeObserver);
+  });
+  beforeEach(() => {
+    watched = [];
+    vi.stubGlobal("ResizeObserver", FakeResizeObserver);
+  });
+  afterEach(() => vi.unstubAllGlobals());
+
+  /**
+   * The page laid out with the picture line `picture()` tall and the rest 40px each, scrolled by
+   * the note pane's own scrollTop (kept here, jsdom keeps none), in a pane `pane()` tall.
+   */
+  function layOutScrolled(picture: () => number, pane: () => number) {
+    const scroller = container.querySelector<HTMLElement>(".note-editor")!;
+    let top = 0;
+    // Only the note's pane scrolls; jsdom would keep a scrollTop on any element.
+    vi.spyOn(Element.prototype, "scrollTop", "get").mockImplementation(function (this: Element) {
+      return this === scroller ? top : 0;
+    });
+    vi.spyOn(Element.prototype, "scrollTop", "set").mockImplementation(function (this: Element, v: number) {
+      if (this === scroller) top = Math.max(0, v);
+    });
+    const box = (t: number, h: number, l = 16, w = 328) => ({ top: t, bottom: t + h, left: l, right: l + w, width: w, height: h, x: l, y: t, toJSON: () => ({}) }) as DOMRect;
+    vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (this: HTMLElement) {
+      const all = lines();
+      const line = this.closest(".ProseMirror > p") as HTMLElement | null;
+      const height = (p: HTMLElement) => (p.querySelector(".nf-attachment") ? picture() : 40);
+      if (line) {
+        let y = 8 - top;
+        for (const p of all.slice(0, all.indexOf(line))) y += height(p);
+        return box(y, height(line));
+      }
+      if (this.classList.contains("ProseMirror")) return box(8 - top, all.reduce((s, p) => s + height(p), 0));
+      return box(0, pane(), 0, 360);
+    });
+    // The editor scales what it measures by each box's own size: the same sizes, unscaled.
+    const size = (side: "width" | "height") => function (this: HTMLElement) {
+      return this.getBoundingClientRect()[side];
+    };
+    vi.spyOn(HTMLElement.prototype, "offsetWidth", "get").mockImplementation(size("width"));
+    vi.spyOn(HTMLElement.prototype, "offsetHeight", "get").mockImplementation(size("height"));
+    vi.spyOn(Element.prototype, "clientWidth", "get").mockImplementation(size("width"));
+    vi.spyOn(Element.prototype, "clientHeight", "get").mockImplementation(size("height"));
+    return () => top;
+  }
+
+  const attachTall = async () => {
+    note("N-TALL", [
+      { set: {}, pieces: [["Packing", {}]] },
+      { set: {}, pieces: [["Towels", {}]] },
+    ]);
+    await open("N-TALL");
+    await act(async () => window.skykeepNotes!.attach("/cache/Screenshot.png"));
+    await settle();
+    expect(caret()).toEqual({ line: 3, offset: 0 });
+  };
+
+  it("after a tall picture is added, the line under it is brought into view as the picture lands", async () => {
+    let picture = 56;
+    await attachTall();
+    const scrolled = layOutScrolled(() => picture, () => 640);
+    // The picture lands at its full height (a phone's screenshot, the note's width wide).
+    picture = 1300;
+    resized();
+    // The line under it (8 + 40 + 40 + 1300 from the top) is now on screen, the picture above it.
+    expect(scrolled()).toBeGreaterThan(8 + 80 + 1300 + 40 - 640 - 1);
+  });
+
+  it("and the keyboard coming up keeps it in view", async () => {
+    await attachTall();
+    let pane = 900;
+    const scrolled = layOutScrolled(() => 600, () => pane);
+    pane = 400;
+    act(() => void window.dispatchEvent(new Event("resize")));
+    expect(scrolled()).toBeGreaterThan(8 + 80 + 600 + 40 - 400 - 1);
+  });
+
+  it("once the person scrolls the note themselves, the page no longer pulls it back", async () => {
+    let picture = 56;
+    await attachTall();
+    const scrolled = layOutScrolled(() => picture, () => 640);
+    const pane = container.querySelector(".note-editor")!;
+    act(() => void pane.dispatchEvent(new Event("touchstart", { bubbles: true })));
+    picture = 1300;
+    resized();
+    act(() => void window.dispatchEvent(new Event("resize")));
+    expect(scrolled()).toBe(0);
   });
 });

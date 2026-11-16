@@ -281,6 +281,14 @@ function NotesPage({ page }: { page: Page }) {
           found={args.guid === null ? undefined : queryWords((args.found ?? []).join(" "))}
           writeAround
         />
+        {editable && (
+          // Room to write past the last thing in the note, as Notes leaves it, however tall that
+          // thing is: a box of its own under the note, so a tap in it is never a tap on a picture
+          // (followTaps puts the caret at the end, on a line of its own under an attachment).
+          <div className="m-room" aria-hidden="true">
+            <span className="m-room-hint">Tap to keep writing</span>
+          </div>
+        )}
       </div>
       {session.attaching && (
         // The note waits while a file goes in, so nothing typed meanwhile is lost when it
@@ -316,7 +324,7 @@ function followTaps(page: Page) {
   const onMouseDown = (e: MouseEvent) => {
     const target = e.target as Element | null;
     const pane = target?.closest?.('.m-page .note-editor[data-editable="true"]');
-    if (!pane || !target || !(target === pane || target.matches(".note-rich-host, .ProseMirror"))) return;
+    if (!pane || !target || !(target === pane || target.matches(".note-rich-host, .ProseMirror") || target.closest(".m-room"))) return;
     if (!page.editor.current?.tapAt(e.clientX, e.clientY)) return;
     e.preventDefault();
     host.event("host_keyboard", {});

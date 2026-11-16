@@ -137,12 +137,19 @@ there rather than following it; the format bar's link button then edits or remov
 
 ## Writing around an attachment (src/screens/notes/around.ts)
 
+- Under a note being written there is always room to tap, however tall its last thing is: a box
+  of its own under the lines (`.m-room`), a third of the pane tall and never under 144px, so
+  scrolled to the end a tap there is never a tap on a picture. Under a note that ends in an
+  attachment it says "Tap to keep writing", in the placeholder's grey; under text, nothing.
 - A tap that no line takes — in the room under the note, over its first line, in the margin
   beside a line — puts the caret where the finger is nearest. Under a picture, table, drawing or
   file that ends the note (or over one that starts it), an empty line is made to write on.
 - A line made to write on is the note's only once something is written on it: the note is read
   back, saved and attached at without it, so a note only looked at is never changed or saved. A
   re-read keeps it where it was.
+- A caret put for writing (a tap under the note, a file just added, a long press) is kept in
+  view while the page moves under it — a picture drawn at its full height above it, the
+  keyboard coming up — until the person touches or scrolls the page.
 - The arrow keys go from text to just before an attachment, then just after it; Backspace just
   after one removes it. A single tap on one opens it (`host_open_attachment`); a long press
   chooses it whole, drawn with the accent ring (`data-chosen`), the caret just after it, for
