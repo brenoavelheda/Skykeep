@@ -91,10 +91,15 @@ fun NoteWebEditor(
       page.close()
     }
   }
-  // A link tapped while reading: Android's own app for its kind.
+  // A link tapped while reading: Android's own app for its kind. The caret put for writing by
+  // the page itself: the keyboard up for it.
   DisposableEffect(state, page) {
     state.onOpenLink = { href -> openOutside(context, href) }
-    onDispose { state.onOpenLink = {} }
+    state.onKeyboard = { page.focusForTyping() }
+    onDispose {
+      state.onOpenLink = {}
+      state.onKeyboard = {}
+    }
   }
   LaunchedEffect(page, ready, guid, folderGuid, editable, locked, found, theme) {
     if (ready) {
@@ -161,8 +166,10 @@ private class NotePageView(
   }
 
   /**
-   * A new note opens ready to type: the WebView takes Android's focus and asks for the keyboard.
-   * Asked again a moment later, as the page draws its editor only after the note is read.
+   * A new note opens ready to type, and the page asks for the keyboard when it puts the caret
+   * for writing itself (`host_keyboard`): the WebView takes Android's focus and asks for the
+   * keyboard. Asked again a moment later, as the page draws its editor only after the note is
+   * read, and focuses it only once a file going in has landed.
    */
   fun focusForTyping() {
     view.requestFocus()

@@ -121,17 +121,17 @@ body {
 .m-page .note-rich .nf-attachment img { -webkit-touch-callout: none; -webkit-user-select: none; user-select: none; }
 /* Chosen whole: a 3px accent ring round the thing itself and the accent laid over it, in both
    looks — what Backspace will take out, seen before it goes. */
-.m-page .note-rich .nf-attachment.ProseMirror-selectednode { position: relative; }
-.m-page .note-rich .nf-attachment.ProseMirror-selectednode:not(.is-image):not(.is-table) > *,
-.m-page .note-rich .nf-attachment.ProseMirror-selectednode.is-image img {
+.m-page .note-rich .nf-attachment:is([data-chosen], .ProseMirror-selectednode) { position: relative; }
+.m-page .note-rich .nf-attachment:is([data-chosen], .ProseMirror-selectednode):not(.is-image):not(.is-table) > *,
+.m-page .note-rich .nf-attachment:is([data-chosen], .ProseMirror-selectednode).is-image img {
   outline: 3px solid var(--m-accent-text);
   outline-offset: 2px;
   border-radius: 12px;
 }
-.m-page .note-rich .nf-attachment.is-table.ProseMirror-selectednode > .nf-table {
+.m-page .note-rich .nf-attachment.is-table:is([data-chosen], .ProseMirror-selectednode) > .nf-table {
   box-shadow: inset 0 0 0 var(--hairline) var(--m-accent-text), 0 0 0 3px var(--m-accent-text);
 }
-.m-page .note-rich .nf-attachment.ProseMirror-selectednode::after {
+.m-page .note-rich .nf-attachment:is([data-chosen], .ProseMirror-selectednode)::after {
   content: "";
   position: absolute;
   inset: 0;

@@ -15,7 +15,7 @@
  */
 import { NodeSelection, Plugin, PluginKey, Selection, TextSelection, type Command, type EditorState, type Transaction } from "prosemirror-state";
 import { keymap } from "prosemirror-keymap";
-import type { EditorView } from "prosemirror-view";
+import { Decoration, DecorationSet, type EditorView } from "prosemirror-view";
 import { Fragment, type Node as PMNode } from "prosemirror-model";
 import { schema } from "./rich";
 
@@ -176,6 +176,35 @@ export function tapAt(view: EditorView, x: number, y: number): Transaction | nul
   return view.state.tr.setSelection(TextSelection.near(view.state.doc.resolve(near.pos)));
 }
 
+/**
+ * An attachment chosen whole by a long press: drawn as chosen (`data-chosen`), the caret just
+ * after it. Not the editor's node selection: on a phone the keyboard sees no text in a
+ * selection of a picture, and its delete key only moved the caret into it; with the caret after
+ * the picture, delete takes the picture out (removeBefore), as it does for one typed past. The
+ * choice goes with the next change or move of the caret.
+ */
+const chosenKey = new PluginKey<number | null>("chosen-attachment");
+const chosen = new Plugin<number | null>({
+  key: chosenKey,
+  state: {
+    init: () => null,
+    apply(tr, at, before) {
+      const made = tr.getMeta(chosenKey) as number | null | undefined;
+      if (made !== undefined) return made;
+      if (at === null || tr.docChanged || !tr.selection.eq(before.selection)) return null;
+      return at;
+    },
+  },
+  props: {
+    decorations(state) {
+      const at = chosenKey.getState(state);
+      const node = at === null || at === undefined ? null : state.doc.nodeAt(at);
+      if (at === null || at === undefined || !isAttachment(node)) return DecorationSet.empty;
+      return DecorationSet.create(state.doc, [Decoration.node(at, at + node!.nodeSize, { "data-chosen": "true" })]);
+    },
+  },
+});
+
 /** Attachment `dom` chosen whole, as a long press chooses one. Null when it is not the note's. */
 export function chooseAttachment(view: EditorView, dom: Element): Transaction | null {
   let pos: number;
@@ -187,8 +216,10 @@ export function chooseAttachment(view: EditorView, dom: Element): Transaction | 
   // posAtDOM inside an atom answers the position after it is opened; the node itself is one
   // place back — or, on some lines, the position it gives is the node's own.
   for (const at of [pos, pos + 1]) {
-    if (at >= 0 && isAttachment(view.state.doc.nodeAt(at)) && view.nodeDOM(at) === dom) {
-      return view.state.tr.setSelection(NodeSelection.create(view.state.doc, at));
+    const node = at >= 0 ? view.state.doc.nodeAt(at) : null;
+    if (isAttachment(node) && view.nodeDOM(at) === dom) {
+      const tr = view.state.tr.setSelection(TextSelection.create(view.state.doc, at + node!.nodeSize));
+      return tr.setMeta(chosenKey, at);
     }
   }
   return null;
@@ -220,6 +251,15 @@ function across(dir: 1 | -1): Command {
   };
 }
 
+/** Delete with an attachment chosen removes it. */
+const removeChosen: Command = (state, dispatch) => {
+  const at = chosenKey.getState(state);
+  const node = at === null || at === undefined ? null : state.doc.nodeAt(at);
+  if (at === null || at === undefined || !isAttachment(node)) return false;
+  dispatch?.(state.tr.delete(at, at + node!.nodeSize).scrollIntoView());
+  return true;
+};
+
 /** Backspace just after an attachment removes it, as Notes does. */
 const removeBefore: Command = (state, dispatch) => {
   const sel = state.selection;
@@ -231,4 +271,4 @@ const removeBefore: Command = (state, dispatch) => {
 };
 
 /** The editor's plugins for writing around attachments, ahead of its own keys. */
-export const aroundPlugins = [spareLine, keymap({ ArrowRight: across(1), ArrowLeft: across(-1), Backspace: removeBefore })];
+export const aroundPlugins = [spareLine, chosen, keymap({ ArrowRight: across(1), ArrowLeft: across(-1), Backspace: removeBefore, Delete: removeChosen })];

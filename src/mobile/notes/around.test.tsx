@@ -386,7 +386,9 @@ describe("4. a long press chooses a picture without opening it", () => {
     // The phone's own menu for a picture is not shown, and the viewer does not open.
     expect(ev.defaultPrevented).toBe(true);
     expect(dev.events("host_open_attachment")).toEqual([]);
-    expect(img.closest(".nf-attachment")!.classList.contains("ProseMirror-selectednode")).toBe(true);
+    // Chosen, drawn so; the caret just after it, where the keyboard's delete takes it out.
+    expect(img.closest(".nf-attachment")!.hasAttribute("data-chosen")).toBe(true);
+    expect(caret()).toEqual({ line: 4, offset: 1 });
     expect(document.activeElement).toBe(editor());
     expect(dev.events("host_keyboard")).toHaveLength(1);
 
@@ -400,6 +402,18 @@ describe("4. a long press chooses a picture without opening it", () => {
     expect(attachmentsIn(save).map((a) => a.id)).toEqual(["TABLE-1", "DRAW-1", "PDF-1", "IMG-BROKEN"]);
   });
 
+  it("Delete removes the chosen picture too; a key that moves the caret lets it go", async () => {
+    await open("DEV-MEDIA");
+    const att = () => container.querySelector('img[src$="/note-media/IMG-1/inline"]')?.closest(".nf-attachment") ?? null;
+    press(att()!.querySelector("img")!);
+    key("ArrowLeft");
+    expect(att()!.hasAttribute("data-chosen")).toBe(false);
+    press(att()!.querySelector("img")!);
+    key("Delete");
+    await settle();
+    expect(att()).toBeNull();
+  });
+
   it("a single tap still opens it", async () => {
     await open("DEV-MEDIA");
     act(() => container.querySelector<HTMLImageElement>('img[src$="/note-media/IMG-1/inline"]')!.click());
@@ -411,13 +425,13 @@ describe("4. a long press chooses a picture without opening it", () => {
     const cell = container.querySelector<HTMLElement>(".nf-table .nf-cell-edit")!;
     const ev = press(cell);
     expect(ev.defaultPrevented).toBe(false);
-    expect(editor().querySelector(".ProseMirror-selectednode")).toBeNull();
+    expect(editor().querySelector("[data-chosen]")).toBeNull();
   });
 
   it("in a note that can't be written, a long press chooses nothing", async () => {
     await act(async () => window.skykeepNotes!.open({ guid: "DEV-MEDIA", folderGuid: null, editable: false, locked: false, found: [], theme: "light" }));
     await settle();
     press(container.querySelector<HTMLImageElement>('img[src$="/note-media/IMG-1/inline"]')!);
-    expect(editor().querySelector(".ProseMirror-selectednode")).toBeNull();
+    expect(editor().querySelector("[data-chosen]")).toBeNull();
   });
 });

@@ -145,8 +145,10 @@ there rather than following it; the format bar's link button then edits or remov
   re-read keeps it where it was.
 - The arrow keys go from text to just before an attachment, then just after it; Backspace just
   after one removes it. A single tap on one opens it (`host_open_attachment`); a long press
-  chooses it whole, drawn with the accent ring, for Backspace or Delete to remove. A table's
-  cells, checklist circles and links are as before.
+  chooses it whole, drawn with the accent ring (`data-chosen`), the caret just after it, for
+  Backspace or Delete to remove — not the editor's node selection, in which a phone keyboard
+  sees no text and its delete key only moved the caret. A table's cells, checklist circles and
+  links are as before.
 
 ## The save session (what the host can rely on)
 
