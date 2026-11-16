@@ -100,27 +100,34 @@ export function installDevHost(opts: { delayMs?: number; page?: Host } = {}): De
       case "note_attach_file": {
         const n = note(a.guid);
         const base = typeof a.base === "string" ? a.base : n.text;
-        const at = Math.max(0, Math.min(Number(a.atOffset) || 0, base.length));
+        let at = Math.max(0, Math.min(Number(a.atOffset) || 0, base.length));
         made += 1;
         const id = `ATT-${made}`;
         attachments.set(id, { id, uti: "public.jpeg", kind: "image", filename: String(a.path).split(/[\\/]/).pop() ?? "File", title: null, width: 1600, height: 1000, size: 1000, hasPreview: false });
-        const body = `${base.slice(0, at)}\ufffc${base.slice(at)}`;
+        // As the engine places one (ckdocument insert_attachment_placed): on a line of its own,
+        // a newline before it inside a line, one after it unless it is the note's last character.
+        const inside = (p: number) => p > 0 && base[p - 1] !== "\n";
+        if (inside(at) && base[at] === "\n") at += 1;
+        const before = inside(at) ? "\n" : "";
+        const after = at < base.length ? "\n" : "";
+        const body = `${base.slice(0, at)}${before}\ufffc${after}${base.slice(at)}`;
         const carried = carryRuns(base, runsFit(base, n.runs) ? n.runs : [plainRun(base.length)], body);
         // The new character stands for the file: a run of its own.
+        const offset = at + before.length;
         const laid: Run[] = [];
         let pos = 0;
         for (const r of carried) {
-          if (at >= pos && at < pos + r.length) {
-            const before = at - pos;
-            if (before) laid.push({ ...r, length: before });
+          if (offset >= pos && offset < pos + r.length) {
+            const ahead = offset - pos;
+            if (ahead) laid.push({ ...r, length: ahead });
             laid.push({ ...r, length: 1, attachment: id });
-            if (r.length - before - 1) laid.push({ ...r, length: r.length - before - 1 });
+            if (r.length - ahead - 1) laid.push({ ...r, length: r.length - ahead - 1 });
           } else laid.push(r);
           pos += r.length;
         }
         n.text = body;
         n.runs = laid;
-        const done: NoteAttached = { attachment: id, media: id, uti: "public.jpeg", offset: at, body };
+        const done: NoteAttached = { attachment: id, media: id, uti: "public.jpeg", offset, body };
         return done;
       }
       case "clipboard_read":

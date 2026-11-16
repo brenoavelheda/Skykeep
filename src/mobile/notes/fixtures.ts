@@ -72,6 +72,13 @@ const media = buildNote([
   { set: {}, pieces: [["Ask about delivery.", {}]] },
 ]);
 
+/** A note that ends with a picture, on a line of its own, as More > Add File leaves one. */
+const picture = buildNote([
+  { set: { style: 0 }, pieces: [["Bathroom", {}]] },
+  { set: {}, pieces: [["The tiles we chose:", {}]] },
+  { set: {}, pieces: [["￼", { attachment: "IMG-1" }]] },
+]);
+
 const secret = buildNote([
   { set: { style: 0 }, pieces: [["Wi-Fi and alarm", {}]] },
   { set: {}, pieces: [["Router: ", {}], ["skykeep-home", { bold: true }]] },
@@ -80,6 +87,7 @@ const secret = buildNote([
 export const DEV_NOTES: DevNote[] = [
   { guid: "DEV-FORMATTED", folderGuid: null, ...formatted },
   { guid: "DEV-MEDIA", folderGuid: null, ...media },
+  { guid: "DEV-PICTURE", folderGuid: null, ...picture },
   { guid: "DEV-LOCKED", folderGuid: null, ...secret, locked: { password: "paraty", hint: "Where we went in March" } },
 ];
 

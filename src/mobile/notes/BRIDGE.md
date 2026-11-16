@@ -86,6 +86,7 @@ added or removed (`TABLE_LINE_WRITES = false`).
 | `host_open_link` | `{href}` | a link tapped while reading (see below) |
 | `host_open_attachment` | `{id, kind, name}` | a picture, drawing, document or file tapped. `kind` is the attachment's (`image`, `drawing`, `document`, `video`, `audio`, `file`); `name` its file name or title, possibly `""` |
 | `host_error` | `{message}` | a save, create, read or file add failed, in words to show |
+| `host_keyboard` | `{}` | the page put the caret where the person writes next — a tap under, over or beside the lines, a long press choosing an attachment, a file just added — and focused the editor: the host gives the WebView the focus and brings the keyboard up **(differs: not in the plan)** |
 
 Links: only addresses Skykeep opens go out (`http`, `https`, `mailto`, `tel`, `geo`, checked
 by `src/lib/links.ts`, `href` normalised), plus `applenotes:note/<id>` links to another note,
@@ -129,8 +130,23 @@ there rather than following it; the format bar's link button then edits or remov
   screen as `base`, then reads the note again and shows it with the file in place; the note
   cannot be typed in meanwhile. A caret the person placed is honoured; with none (the note
   only opened, a checklist circle tapped) the file goes in at the end of the note, on a line
-  of its own. On a new note with nothing typed it posts `host_error` instead.
+  of its own. On a new note with nothing typed it posts `host_error` instead. Once the file is
+  in, the caret goes on a new line right under it (an empty line there already, or one made to
+  write on) and the page posts `host_keyboard`.
 - `resolve(id, ok, payloadJson)` — answers a command (above).
+
+## Writing around an attachment (src/screens/notes/around.ts)
+
+- A tap that no line takes — in the room under the note, over its first line, in the margin
+  beside a line — puts the caret where the finger is nearest. Under a picture, table, drawing or
+  file that ends the note (or over one that starts it), an empty line is made to write on.
+- A line made to write on is the note's only once something is written on it: the note is read
+  back, saved and attached at without it, so a note only looked at is never changed or saved. A
+  re-read keeps it where it was.
+- The arrow keys go from text to just before an attachment, then just after it; Backspace just
+  after one removes it. A single tap on one opens it (`host_open_attachment`); a long press
+  chooses it whole, drawn with the accent ring, for Backspace or Delete to remove. A table's
+  cells, checklist circles and links are as before.
 
 ## The save session (what the host can rely on)
 
