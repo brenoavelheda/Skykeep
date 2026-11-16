@@ -77,10 +77,20 @@ const secret = buildNote([
   { set: {}, pieces: [["Router: ", {}], ["skykeep-home", { bold: true }]] },
 ]);
 
+/** An old note, as one from 2021 is: a scan of several pages, and a web link's card. */
+const old = buildNote([
+  { set: { style: 0 }, pieces: [["Papers", {}]] },
+  { set: {}, pieces: [["The scan:", {}]] },
+  { set: {}, pieces: [["\ufffc", { attachment: "SCAN-1" }]] },
+  { set: {}, pieces: [["Tides for the boat:", {}]] },
+  { set: {}, pieces: [["\ufffc", { attachment: "LINK-1" }]] },
+]);
+
 export const DEV_NOTES: DevNote[] = [
   { guid: "DEV-FORMATTED", folderGuid: null, ...formatted },
   { guid: "DEV-MEDIA", folderGuid: null, ...media },
   { guid: "DEV-LOCKED", folderGuid: null, ...secret, locked: { password: "paraty", hint: "Where we went in March" } },
+  { guid: "DEV-OLD", folderGuid: null, ...old },
 ];
 
 export const DEV_TABLES: Record<string, string[][]> = {
@@ -102,6 +112,16 @@ export const DEV_ATTACHMENTS: Record<string, NoteAttachment> = {
   "PDF-1": info({ id: "PDF-1", kind: "document", uti: "com.adobe.pdf", filename: "Quote from the joiner.pdf", size: 184_000, hasPreview: true }),
   // A picture Apple will not give (a fetch that fails): drawn as its file's chip.
   "IMG-BROKEN": info({ id: "IMG-BROKEN", kind: "image", uti: "public.heic", filename: "IMG_2041.HEIC", width: 4032, height: 3024, size: 2_400_000 }),
+  // An old scan: a gallery with no file, drawn as the pages it holds.
+  "SCAN-1": info({
+    id: "SCAN-1", kind: "scan", uti: "com.apple.notes.gallery", title: "Passport", hasPreview: true,
+    pages: [
+      { id: "SCAN-P1", width: 1240, height: 1754 },
+      { id: "SCAN-P2", width: 1240, height: 1754 },
+    ],
+  }),
+  // A web address kept as a link card.
+  "LINK-1": info({ id: "LINK-1", kind: "link", uti: "public.url", title: "Tide table", url: "https://tabuademares.com/tides", hasPreview: true }),
 };
 
 /** The fake host's picture for an attachment's part, as SVG; null where there is none. */
@@ -119,6 +139,10 @@ export function devPicture(id: string, part: string): string | null {
   if (id === "PDF-1" && part === "preview") {
     const lines = Array.from({ length: 9 }, (_, i) => `<rect x="40" y="${120 + i * 40}" width="${i % 3 === 2 ? 220 : 340}" height="12" rx="6" fill="#c8d0da"/>`).join("");
     return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 420 560"><rect width="420" height="560" fill="#fff"/><rect x="40" y="48" width="200" height="28" rx="6" fill="#7a5600"/>${lines}</svg>`;
+  }
+  if ((id === "SCAN-P1" || id === "SCAN-P2" || id === "LINK-1") && (part === "preview" || part === "file")) {
+    const lines = Array.from({ length: 12 }, (_, i) => `<rect x="60" y="${160 + i * 44}" width="${i % 4 === 3 ? 260 : 420}" height="14" rx="7" fill="#b8c2cc"/>`).join("");
+    return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 620 800"><rect width="620" height="800" fill="#fff"/><rect x="60" y="70" width="240" height="34" rx="8" fill="#7a5600"/>${lines}</svg>`;
   }
   return null;
 }

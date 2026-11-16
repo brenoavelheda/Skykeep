@@ -319,7 +319,7 @@ textarea.note-title::placeholder { color: var(--text-3); }
 .note-rich .nf-p[data-style="103"][data-checked="true"] { color: var(--text-3); }
 /* A table, drawing, picture or scan on a checklist line stands on its own, full width, as Notes
    shows it: no circle floating over an empty first line above it, and no gutter beside it. */
-.note-rich .nf-p[data-style="103"]:has(> .nf-attachment:is(.is-table, .is-image, .is-doc, .is-drawing, .is-table-unread)) {
+.note-rich .nf-p[data-style="103"]:has(> .nf-attachment:is(.is-table, .is-image, .is-doc, .is-drawing, .is-table-unread, .is-scan, .is-link)) {
   padding-inline-start: calc(var(--indent, 0) * 1.5em);
 }
 .note-rich .nf-p[data-style="103"]:has(> .nf-attachment:is(.is-table, .is-image, .is-doc, .is-drawing, .is-table-unread))::before {
@@ -452,6 +452,24 @@ textarea.note-title::placeholder { color: var(--text-3); }
 .nf-file.is-audio .nf-file-glyph, .nf-file.is-video .nf-file-glyph { font-size: var(--t-13); }
 .nf-file-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .nf-file-meta { flex: none; color: var(--text-3); font-size: var(--t-11); }
+
+/* An old scan: its pages, one under the other, each opening full screen as a picture does. */
+.nf-scan { display: flex; flex-direction: column; gap: 8px; max-width: min(100%, 640px); }
+.nf-scan-page { display: block; width: auto; max-width: 100%; height: auto; border-radius: 10px; cursor: zoom-in;
+  background: color-mix(in srgb, var(--text) 6%, transparent); }
+/* A web address kept in a note: its card, as Apple draws it. The address is what opens. */
+.nf-link { display: inline-flex; align-items: center; gap: 10px; max-width: min(100%, 420px); padding: 8px;
+  border-radius: 12px; background: color-mix(in srgb, var(--text) 5%, transparent); color: var(--text);
+  text-decoration: none; cursor: pointer; }
+.nf-link:hover { background: color-mix(in srgb, var(--text) 10%, transparent); }
+.nf-link-preview { flex: none; width: 72px; height: 72px; object-fit: cover; border-radius: 8px; background: #fff; }
+.nf-link-words { min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.nf-link-title { font-size: var(--t-13); font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.nf-link-url { font-size: var(--t-11); color: var(--text-3); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* A scan or a link stands on its own, as in Notes: no grey box around it. */
+.note-rich .nf-attachment.is-scan, .note-rich .nf-attachment.is-link { padding: 0; margin: 4px 0; background: none; border-radius: 0; }
+/* One with nothing to show says so in words, not as a card that cannot open. */
+.nf-attachment:is(.is-scan-empty, .is-link-empty) .nf-file-name { color: var(--text-3); font-size: var(--t-13); }
 
 /* Web addresses found in a note: links, as Notes draws them. */
 .nf-autolink, .ProseMirror a[href] { color: var(--accent-strong); text-decoration: underline; text-decoration-thickness: from-font; text-underline-offset: 2px; cursor: pointer; }
