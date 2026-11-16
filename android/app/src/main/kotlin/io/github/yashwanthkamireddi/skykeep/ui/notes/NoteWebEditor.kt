@@ -6,6 +6,7 @@ import android.content.Context
 import android.content.Intent
 import android.graphics.Bitmap
 import android.net.Uri
+import android.view.inputmethod.InputMethodManager
 import android.webkit.JavascriptInterface
 import android.webkit.WebResourceRequest
 import android.webkit.WebResourceResponse
@@ -96,7 +97,13 @@ fun NoteWebEditor(
     onDispose { state.onOpenLink = {} }
   }
   LaunchedEffect(page, ready, guid, folderGuid, editable, locked, found, theme) {
-    if (ready) state.open(guid, folderGuid, editable, locked, found, theme)
+    if (ready) {
+      state.open(guid, folderGuid, editable, locked, found, theme)
+      // A new note opens ready to type, as New Note did before the page drew the note: the
+      // editor takes the caret (the page does that itself) and the phone's keyboard comes up.
+      // An existing note opens to be read: the keyboard stays down until it is tapped.
+      if (guid == null) page.focusForTyping()
+    }
   }
   // The keyboard takes the bottom, and the page shrinks above it: the caret stays in view.
   AndroidView(modifier = modifier.imePadding(), factory = { page.view })
@@ -151,6 +158,20 @@ private class NotePageView(
   /** Saves what is typed now, as the app goes to the background or the screen is rebuilt. */
   fun flushSoon() {
     scope.launch { state.flush() }
+  }
+
+  /**
+   * A new note opens ready to type: the WebView takes Android's focus and asks for the keyboard.
+   * Asked again a moment later, as the page draws its editor only after the note is read.
+   */
+  fun focusForTyping() {
+    view.requestFocus()
+    val imm = context.getSystemService(InputMethodManager::class.java) ?: return
+    fun show() {
+      if (!closed.get()) imm.showSoftInput(view, InputMethodManager.SHOW_IMPLICIT)
+    }
+    view.post { show() }
+    view.postDelayed({ show() }, 300)
   }
 
   /** The page is gone: its bridge and its view with it. */

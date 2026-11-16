@@ -52,6 +52,7 @@ import kotlinx.coroutines.runBlocking
 import org.json.JSONObject
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertTrue
 import org.junit.Rule
 import org.junit.Test
@@ -84,7 +85,11 @@ class FormatBarTest {
   /** The engine with one note, answering every call the page and the chrome make, and nothing else. */
   private class FakeEngine(note: String, runs: String) {
     @Volatile var body: String = note
+    /** The note's runs as the engine keeps them: the last ones saved, read back as they are. */
+    @Volatile var storedRuns: String = runs
     val markdownAsked = CopyOnWriteArrayList<Pair<String, String>>()
+    /** Each save the page asked for: its text and its runs, as the page sent them. */
+    val saves = CopyOnWriteArrayList<Pair<String, String?>>()
     var picture: ByteArray = ByteArray(0)
     val engine: AccountInterface
 
@@ -100,9 +105,11 @@ class FormatBarTest {
           "hashCode" -> System.identityHashCode(proxy)
           "toString" -> "FakeEngine"
           "noteBody" -> body
-          "noteRunsJson" -> runs
+          "noteRunsJson" -> storedRuns
           "noteSaveFormatted" -> {
+            saves += (list[1] as String) to (list[3] as String?)
             body = list[1] as String
+            (list[3] as String?)?.let { storedRuns = it }
             Unit
           }
           "noteMarkdown" -> {
@@ -124,6 +131,15 @@ class FormatBarTest {
           }
         }
       } as AccountInterface
+    }
+
+    /** What another device wrote at the end of the note meanwhile, its formatting with it. */
+    fun append(more: String) {
+      body += more
+      val runs = org.json.JSONArray(storedRuns)
+      val last = runs.getJSONObject(runs.length() - 1)
+      last.put("length", last.getInt("length") + more.length)
+      storedRuns = runs.toString()
     }
   }
 
@@ -251,6 +267,9 @@ class FormatBarTest {
     assertEquals(listOf("style" to 0, "style" to null, "colour" to 4, "colour" to null), page.commands.toList())
   }
 
+  /** The engine behind the note `editing` opens, for the tests that read what was saved. */
+  private lateinit var editingFake: FakeEngine
+
   /**
    * The note open with its bar, as NoteScreen draws it: the editor focused (and the keyboard up
    * where the phone shows one), then Bold tapped. The editor keeps the focus, and the page's
@@ -260,6 +279,7 @@ class FormatBarTest {
     val rest = "Shortcrust: flour, butter, sugar\nCurd: lemons, eggs, sugar, butter\nBake 25 minutes at 180°\n"
     // The title line in Notes' Title style, the rest body: runs that describe the text exactly.
     val fake = FakeEngine("Lemon tart\n$rest", """[{"length":11,"style":0},{"length":${rest.length}}]""")
+    editingFake = fake
     val state = NoteEditorState()
     // As MainActivity runs: edge to edge, and the keyboard resizing (the manifest's adjustResize).
     compose.runOnUiThread {
@@ -327,6 +347,101 @@ class FormatBarTest {
     shot("styles-sheet-dark")
   }
 
+  /** Whether the phone's keyboard is up over the note. */
+  private fun keyboardShown(): Boolean {
+    var shown = false
+    compose.runOnUiThread {
+      val root = compose.activity.window.decorView
+      shown = (ViewCompat.getRootWindowInsets(root)?.getInsets(WindowInsetsCompat.Type.ime())?.bottom ?: 0) > 0
+    }
+    return shown
+  }
+
+  /** A key through Android's own input, as the phone's keyboard hands it over. */
+  private fun key(code: Int) {
+    shell("input keyevent $code")
+    Thread.sleep(120)
+  }
+
+  /** Letters typed the way the keyboard types them — `input text`, never a script's insertText. */
+  private fun typeThroughKeyboard(text: String) {
+    shell("input text $text")
+    Thread.sleep(120)
+  }
+
+  /** A shell command through the device, its output drained so it never waits on us. */
+  private fun shell(command: String) {
+    val out = InstrumentationRegistry.getInstrumentation().uiAutomation.executeShellCommand(command)
+    java.io.FileInputStream(out.fileDescriptor).use { it.readBytes() }
+    out.close()
+  }
+
+  /** Whether `index` of the note's text is bold in the runs as the page sent them. */
+  private fun boldAt(runsJson: String, index: Int): Boolean {
+    var at = 0
+    val runs = org.json.JSONArray(runsJson)
+    for (i in 0 until runs.length()) {
+      val run = runs.getJSONObject(i)
+      val length = run.optInt("length", 0)
+      if (index >= at && index < at + length) return run.optBoolean("bold", false)
+      at += length
+    }
+    return false
+  }
+
+  /**
+   * A format chosen with nothing selected holds for everything typed next: Bold tapped on a new
+   * empty line, the pause the owner took, then the word typed with the keyboard — the capital
+   * letter it decided on included. Nothing landing in between may take the format away.
+   */
+  @Test
+  fun a_format_chosen_on_an_empty_line_is_held_for_the_whole_word() {
+    val state = editing(dark = false)
+    assertTrue("the keyboard was down before the word", keyboardShown())
+
+    // The caret to the end of the note and a new, empty line, with the arrows and Return.
+    key(123) // End
+    repeat(4) { key(20) } // Down, line by line
+    key(66) // Enter
+    compose.waitForIdle()
+
+    // Something typed before, so that a save of it lands while the format is chosen.
+    typeThroughKeyboard("firstline")
+    waitForJs("document.querySelector('.ProseMirror')?.innerText ?? ''") { it.contains("firstline") }
+    key(66) // Enter: a new, empty line
+    compose.waitForIdle()
+
+    compose.onNodeWithContentDescription("Bold").performClick()
+    // The pause the owner took: the save of the line above lands, and the note is read again
+    // as it is after a sync — here changed on another device.
+    compose.waitUntil(20_000) { editingFake.saves.isNotEmpty() }
+    Thread.sleep(200)
+    editingFake.append("Written on the iPhone.\n")
+    state.refresh()
+    // The re-read was taken in: the note shows what the other device wrote.
+    waitForJs("document.querySelector('.ProseMirror')?.innerText ?? ''") { it.contains("Written on the iPhone.") }
+    Thread.sleep(300)
+
+    // The keys the owner typed next: the capital the keyboard makes of the first letter.
+    typeThroughKeyboard("Boldword")
+    waitForJs("document.querySelector('.ProseMirror')?.innerText ?? ''") { it.contains("Boldword") }
+    // The format chosen is still the one the bar shows, and the caret holds.
+    compose.onNodeWithContentDescription("Bold").assertIsOn()
+    runBlocking { state.flush() }
+
+    val save = editingFake.saves.last()
+    val at = save.first.indexOf("Boldword")
+    assertTrue("the word is not in ${save.first}", at >= 0)
+    val runs = save.second
+    assertNotNull("the note was saved without its runs", runs)
+    for (i in 0 until 8) {
+      assertTrue(
+        "character $i of Boldword is not bold in ${runs} (text ${save.first})",
+        boldAt(runs!!, at + i),
+      )
+    }
+  }
+
   @Test
   fun export_writes_the_engine_s_markdown_to_the_chosen_document() {
     val fake = FakeEngine("Lemon tart\nflour\n", """[{"length":11,"style":0},{"length":6}]""")
@@ -388,3 +503,4 @@ class FormatBarTest {
     return ByteArrayOutputStream().also { bitmap.compress(Bitmap.CompressFormat.PNG, 100, it) }.toByteArray()
   }
 }
+

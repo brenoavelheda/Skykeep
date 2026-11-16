@@ -89,6 +89,13 @@ body {
 .m-page .nf-image,
 .m-page .nf-drawing { max-width: 100%; border-radius: 12px; cursor: default; }
 .m-page .nf-drawing { border-radius: 0; }
+/* A drawing comes from Apple as its ink on a white rendering of its own, light or dark; the
+   page's dark look draws it on a white card, so the ink is readable either way. */
+:root[data-theme="dark"] .m-page .nf-drawing {
+  border-radius: 12px;
+  background: #fff;
+  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.16);
+}
 .m-page .note-rich .nf-attachment.is-image,
 .m-page .note-rich .nf-attachment.is-doc,
 .m-page .note-rich .nf-attachment.is-file { margin: 6px 0; }
