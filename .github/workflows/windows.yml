@@ -336,7 +336,9 @@ jobs:
               $true }, [System.IntPtr]::Zero) | Out-Null
             $found | Select-Object -First 1
           }
-          $p = Start-Process $exe.FullName -PassThru
+          # Each step of making and showing a window, for the #62 checks below (timing.rs).
+          $env:SKYKEEP_TIMING = "1"
+          $p = Start-Process $exe.FullName -PassThru -RedirectStandardError "$env:RUNNER_TEMP\skykeep-stderr.txt"
           $titles = @()
           for ($i = 0; $i -lt 30 -and -not ($titles -contains "Skykeep"); $i++) {
             Start-Sleep -Seconds 2
@@ -377,6 +379,73 @@ jobs:
             if (-not ($lists | Where-Object { $_.Contains($needle) })) { throw "the jump list has no '$task' task" }
           }
           "jump list: $($tasks -join ', ')"
+          # #62: an app's window made again after it was let go of drew nothing (all white) or
+          # did not come back: the window-state plugin restored its size inside Tauri's window-ready
+          # hook and froze the app (main.rs, restore_window_state). As a person does it: the app
+          # opened, made as small as it goes, closed; once Skykeep let go of the closed window (a
+          # minute, apps.rs KEPT) it is opened again and has to be on screen, drawn.
+          Add-Type -TypeDefinition '
+            using System; using System.Runtime.InteropServices;
+            public static class Px {
+              [DllImport("user32.dll")] public static extern bool SetWindowPos(IntPtr h, IntPtr after, int x, int y, int cx, int cy, uint flags);
+              [DllImport("user32.dll")] public static extern bool PostMessage(IntPtr h, uint msg, IntPtr w, IntPtr l);
+              [DllImport("user32.dll")] public static extern bool PrintWindow(IntPtr h, IntPtr hdc, uint flags);
+              [StructLayout(LayoutKind.Sequential)] public struct R { public int L, T, Ri, B; }
+              [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr h, out R r);
+            }'
+          function Windows-Of([int]$procId) {
+            $list = New-Object System.Collections.Generic.List[string]
+            [Win.U]::EnumWindows({ param($w, $l)
+              $owner = 0; [void][Win.U]::GetWindowThreadProcessId($w, [ref]$owner)
+              if ($owner -eq $procId) {
+                $sb = New-Object System.Text.StringBuilder 256; [void][Win.U]::GetWindowText($w, $sb, 256)
+                $r = New-Object Px+R; [void][Px]::GetWindowRect($w, [ref]$r)
+                if ($sb.Length -gt 0) { $list.Add("'$($sb.ToString())' visible=$([Win.U]::IsWindowVisible($w)) at $($r.L),$($r.T) $($r.Ri - $r.L)x$($r.B - $r.T)") }
+              }
+              $true }, [System.IntPtr]::Zero) | Out-Null
+            $list
+          }
+          function Colours([IntPtr]$h, [string]$name) {
+            $r = New-Object Px+R; [void][Px]::GetWindowRect($h, [ref]$r)
+            $w = $r.Ri - $r.L; $hh = $r.B - $r.T
+            $bmp = New-Object System.Drawing.Bitmap $w, $hh
+            $g = [System.Drawing.Graphics]::FromImage($bmp); $dc = $g.GetHdc()
+            [void][Px]::PrintWindow($h, $dc, 2); $g.ReleaseHdc($dc); $g.Dispose()
+            $seen = @{}
+            for ($y = 48; $y -lt $hh - 8; $y += 4) { for ($x = 8; $x -lt $w - 8; $x += 4) { $seen[$bmp.GetPixel($x, $y).ToArgb()] = 1 } }
+            $bmp.Save("$env:RUNNER_TEMP\app-$name.png")
+            "$name window $w x $hh, $($seen.Count) colours"
+            return $seen.Count
+          }
+          function Reopened([string]$app, [string]$title, [int]$w, [int]$hgt) {
+            Start-Process $exe.FullName -ArgumentList "--app $app"
+            $h = $null
+            for ($i = 0; $i -lt 15 -and -not $h; $i++) { Start-Sleep -Seconds 2; $h = Find-Window $p.Id $title }
+            if (-not $h) { throw "no $title window" }
+            if ($w -gt 0) {
+              [void][Px]::SetWindowPos($h, [IntPtr]::Zero, 100, 100, $w, $hgt, 0x0014)
+              Start-Sleep -Seconds 2
+            }
+            $r = New-Object Px+R; [void][Px]::GetWindowRect($h, [ref]$r); "$title left at $($r.Ri - $r.L)x$($r.B - $r.T)"
+            [void][Px]::PostMessage($h, 0x0010, [IntPtr]::Zero, [IntPtr]::Zero)         # WM_CLOSE
+            Start-Sleep -Seconds 70
+            Start-Process $exe.FullName -ArgumentList "--app $app"
+            $h = $null
+            for ($i = 0; $i -lt 15 -and -not $h; $i++) { Start-Sleep -Seconds 2; $h = Find-Window $p.Id $title }
+            if (-not $h) {
+              Windows-Of $p.Id | ForEach-Object { "  window $_" }
+              $b = [System.Windows.Forms.Screen]::PrimaryScreen.Bounds
+              $bmp = New-Object System.Drawing.Bitmap $b.Width, $b.Height
+              [System.Drawing.Graphics]::FromImage($bmp).CopyFromScreen($b.Location, [System.Drawing.Point]::Empty, $b.Size)
+              $bmp.Save("$env:RUNNER_TEMP\app-$app-$w-screen.png")
+              throw "$title did not come back after Skykeep let go of its window (#62)"
+            }
+            Start-Sleep -Seconds 4
+            $n = Colours $h $app
+            if ($n -lt 8) { throw "$title, made again, drew nothing (#62): $n colours" }
+          }
+          # The case that froze before the fix: left at its smallest, its window let go, opened again.
+          Reopened "reminders" "Reminders" 480 400
           Stop-Process -Id $p.Id
           Start-Sleep -Seconds 2
           # Uninstalled, every entry goes with it. The uninstaller hands itself to a copy and
@@ -396,4 +465,14 @@ jobs:
         with:
           name: skykeep-on-windows
           path: skykeep-on-windows.png
+          if-no-files-found: ignore
+
+      - name: What the app windows drew, and Skykeep's own account of it (#62)
+        if: ${{ always() }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: app-windows
+          path: |
+            ${{ runner.temp }}/app-*.png
+            ${{ runner.temp }}/skykeep-stderr.txt
           if-no-files-found: ignore

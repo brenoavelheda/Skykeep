@@ -17,8 +17,18 @@ jobs:
     runs-on: ubuntu-24.04
     container:
       image: ghcr.io/flathub-infra/flatpak-github-actions:gnome-51
-      options: --privileged
+      # The image's runtimes, on a volume of their own (Docker fills it from the image): when
+      # Flathub has a newer GNOME SDK than the image, flatpak-builder updates it in place, and
+      # inside the image's overlay layers that rename fails with "Invalid cross-device link"
+      # (15 Nov, 26c5e3c: the build died; the next commit's passed once nothing was newer).
+      options: --privileged -v /var/lib/flatpak
     steps:
+      - name: Where the runtimes are
+        run: |
+          flatpak --installations
+          df -T /var/lib/flatpak | tail -1
+          # Every pending runtime update, done here, so a failure says so at once.
+          flatpak update --system -y --noninteractive
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
@@ -26,7 +36,12 @@ jobs:
         with:
           bundle: skykeep.flatpak
           manifest-path: packaging/flatpak/io.github.yashwanthkamireddi.Skykeep.yml
-          cache-key: flatpak-builder-${{ github.sha }}
+          # No cache: keyed by the commit, none was ever found again ("No cache was found" every
+          # run), yet each push saved 361 MB that pushed the Windows build's caches out of the
+          # repository's 10 GB (a cold Windows build every time). A key that outlives a commit is
+          # not safe either: the app comes in as a `dir` source, and a reused cache could carry
+          # an older build of it.
+          cache: false
 
   starts:
     # The bundle installs and Skykeep starts and stays up, offline, under a virtual display.

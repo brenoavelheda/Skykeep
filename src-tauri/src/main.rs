@@ -26,10 +26,12 @@ mod diagnostics;
 mod drive_watch;
 mod export;
 mod fetching;
+mod first_show;
 mod folder_download;
 mod grants;
 mod hello;
 mod intake;
+mod iphone;
 mod launcher;
 /// The library behind one lock: shared with the phone's engine (crates/quince-sync).
 pub use quince_sync::library_lock;
@@ -6315,6 +6317,34 @@ fn window_fullscreen(window: tauri::WebviewWindow, on: bool) -> UiResult<bool> {
     window.is_fullscreen().map_err(|e| e.to_string())
 }
 
+/// Float on Top (Apple's name for it, as in Notes' Window menu): this window kept above the
+/// others, or not (#40). Answers whether it now is.
+#[tauri::command]
+fn window_float(window: tauri::WebviewWindow, on: bool) -> UiResult<bool> {
+    window.set_always_on_top(on).map_err(|e| e.to_string())?;
+    Ok(on)
+}
+
+/// Whether this desktop lets an app keep its window on top. Wayland has no protocol for it:
+/// GTK's keep-above is ignored there (GNOME, KDE, Hyprland and the rest decide alone, through
+/// their own window rules), so the control isn't offered rather than offered and doing nothing.
+/// Windows and X11 honour it.
+#[tauri::command]
+fn window_float_possible() -> bool {
+    !wayland_session()
+}
+
+/// A Linux session drawn through Wayland, as GTK chooses its backend: Wayland when the session
+/// offers it, unless GDK_BACKEND puts X11 first.
+fn wayland_session() -> bool {
+    if !cfg!(target_os = "linux") {
+        return false;
+    }
+    let wayland = std::env::var_os("WAYLAND_DISPLAY").is_some_and(|v| !v.is_empty());
+    let x11_first = std::env::var("GDK_BACKEND").is_ok_and(|b| b.trim_start().starts_with("x11"));
+    wayland && !x11_first
+}
+
 /// Whether this session runs under a tiling Wayland compositor, which manages windows itself.
 pub(crate) fn tiling_compositor() -> bool {
     let set = |k: &str| std::env::var_os(k).is_some_and(|v| !v.is_empty());
@@ -6339,6 +6369,11 @@ pub(crate) fn tiling_compositor() -> bool {
 fn window_ready(app: tauri::AppHandle, window: tauri::WebviewWindow, needs_you: Option<bool>) {
     timing::mark(format_args!("window_ready {}", window.label()));
     // An app's own window (Notes, Reminders…): shown once it has drawn.
+    // Only while its first show is still owed: a window closed since, or a page loaded again,
+    // is never brought back by it (first_show).
+    if !first_show::take(window.label()) {
+        return;
+    }
     if window.label() != "main" {
         apps::show(&window);
         return;
@@ -6473,11 +6508,34 @@ fn wind_down(app: &tauri::AppHandle) {
             use tauri_plugin_window_state::AppHandleExt;
             app.save_window_state(window_state_kept()).ok();
         }
+        first_show::settle_all();
         for w in app.webview_windows().values() {
             w.hide().ok();
         }
         cpu::stop();
         mount::release_within(Duration::from_secs(3));
+    }
+}
+
+/// A window put back at the size and place it was left, once made: outside Tauri's window-ready
+/// hook, where the window-state plugin would do it and freeze the app (#62, see the plugin's
+/// set-up in `main`). The plugin's own resize handler stands aside while it restores.
+///
+/// Always on the main thread (#83). `restore_state` holds the plugin's cache lock while it asks
+/// for the monitors and sets the size; from another thread each of those waits for the main
+/// thread, and the main thread can be in the plugin's own window-ready hook waiting for that
+/// same lock: an app opened from its tile (app_open, a worker thread) froze Skykeep for good on
+/// Windows in 0.1.27. On the main thread those calls are made directly, with nothing to wait on.
+pub(crate) fn restore_window_state(window: &tauri::WebviewWindow) {
+    let w = window.clone();
+    let queued = window.run_on_main_thread(move || {
+        use tauri_plugin_window_state::WindowExt;
+        if let Err(e) = w.restore_state(window_state_kept()) {
+            quiet!("a window's size and place could not be put back: {e}");
+        }
+    });
+    if let Err(e) = queued {
+        quiet!("a window's size and place could not be put back: {e}");
     }
 }
 
@@ -6494,15 +6552,9 @@ fn show_when_ready(app: &tauri::AppHandle) {
     if login::background() || login::search_only() || LAUNCHED_AS_APP.load(Ordering::SeqCst) {
         return;
     }
-    let app = app.clone();
-    tauri::async_runtime::spawn(async move {
-        tokio::time::sleep(Duration::from_secs(3)).await;
-        if let Some(w) = app.get_webview_window("main") {
-            if !w.is_visible().unwrap_or(true) {
-                show_window(&app);
-            }
-        }
-    });
+    if let Some(w) = app.get_webview_window("main") {
+        first_show::fallback(&w);
+    }
 }
 
 /// The whole-library window was asked for after a launch as one app, which does not make it.
@@ -6534,6 +6586,8 @@ fn make_main(app: &tauri::AppHandle) -> Option<tauri::WebviewWindow> {
         }
     };
     timing::mark("main made");
+    first_show::owe(&window);
+    restore_window_state(&window);
     // A tiling compositor places, sizes and closes windows itself; a title bar with minimise
     // and maximise there only takes room and does nothing it does not. On a desktop that
     // floats windows — GNOME, KDE — it is how a window is moved, so it stays.
@@ -6549,6 +6603,8 @@ fn show_window(app: &tauri::AppHandle) -> bool {
     login::shown();
     if let Some(window) = app.get_webview_window("main") {
         timing::mark("main shown");
+        // Asked for: shown now, and what its page decides once drawn no longer applies.
+        first_show::settle("main");
         window.show().ok();
         window.unminimize().ok();
         window.set_focus().ok();
@@ -6558,14 +6614,8 @@ fn show_window(app: &tauri::AppHandle) -> bool {
     let Some(window) = make_main(app) else {
         return false;
     };
-    // Shown by its window_ready once drawn; shown anyway if that never comes.
-    tauri::async_runtime::spawn(async move {
-        tokio::time::sleep(Duration::from_secs(3)).await;
-        if !window.is_visible().unwrap_or(true) {
-            window.show().ok();
-            window.set_focus().ok();
-        }
-    });
+    // Shown by its window_ready once drawn; shown anyway if that never comes, unless closed.
+    first_show::fallback(&window);
     true
 }
 
@@ -7023,11 +7073,23 @@ fn main() {
         // Each window — the library, and every app's own — reopens at the size and place it was
         // left, as Apple's apps do. Not whether it shows: that stays Skykeep's (hidden at
         // login, shown once drawn).
-        .plugin(
-            tauri_plugin_window_state::Builder::default()
+        .plugin({
+            // Never restored by the plugin while a window is being made: it does that inside
+            // Tauri's window-ready hook, with Tauri's plugin lock held, and a size or place that
+            // differs from the one made sends Windows' WM_WINDOWPOSCHANGED back through that
+            // same lock: the app froze for good. Reopened after it was let go (apps::KEPT) at
+            // the smallest size, Reminders never came back, or drew nothing (#62; upstream
+            // tauri-apps/plugins-workspace#2088, open). Each window is restored by
+            // `restore_window_state` right after it is made, outside that lock.
+            let mut kept = tauri_plugin_window_state::Builder::default()
                 .with_state_flags(window_state_kept())
-                .build(),
-        )
+                .skip_initial_state("main")
+                .skip_initial_state(intake::CAPTURE_WINDOW);
+            for (key, _) in apps::APPS {
+                kept = kept.skip_initial_state(&apps::label(key));
+            }
+            kept.build()
+        })
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
         // Skykeep's own updates (updates.rs). Driven from Rust only: the window is granted none
@@ -7039,6 +7101,18 @@ fn main() {
         // with "URL can't be shown", and there was no way back. Only the kinds a person means
         // by "a link" go out (links.rs): a `file:` or `search-ms:` link in a shared note is
         // someone else's choice, and the opener would run it.
+        // The system's date locale (LC_TIME before LANG), known to every window before its first
+        // line runs: read later, a Calendar opened with the language's week (Sunday for en_US)
+        // and redrew a moment after with LC_TIME's (Monday for en_GB), a visible flip.
+        .plugin(
+            tauri::plugin::Builder::<tauri::Wry, ()>::new("time-locale")
+                .js_init_script(format!(
+                    "window.__timeLocale = {};",
+                    serde_json::to_string(&appearance::system_time_locale())
+                        .unwrap_or_else(|_| "null".into())
+                ))
+                .build(),
+        )
         .plugin(
             tauri::plugin::Builder::<tauri::Wry, ()>::new("links")
                 .on_navigation(|webview, url| {
@@ -7084,6 +7158,7 @@ fn main() {
             }
             // A window gone for good: the update notice, if it showed it, moves to another.
             if let tauri::WindowEvent::Destroyed = event {
+                first_show::settle(window.label());
                 updates::put_away(window.app_handle(), window.label());
             }
             // Coming back to a window is when a change made elsewhere is looked for at once.
@@ -7318,6 +7393,7 @@ fn main() {
             }
             // Before anything reaches Apple, so a run with diagnostics on has all of it.
             diagnostics::start(&dir);
+            iphone::start(app.handle(), &dir);
             let client = match Client::new(&dir) {
                 Ok(client) => client,
                 Err(quince_auth::Error::Io(e)) => cannot_start(&dir, &folder_problem(&e)),
@@ -7473,6 +7549,9 @@ fn main() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
+            iphone::iphone_status,
+            iphone::iphone_every_app,
+            iphone::iphone_set,
             data_access::data_access_status,
             data_access::data_access_ask,
             account_refresh,
@@ -7486,7 +7565,6 @@ fn main() {
             outbox::outbox_discard,
             outbox::outbox_wake,
             appearance::system_contrast,
-            appearance::system_time_locale,
             network_reach,
             updates::update_status,
             updates::update_check,
@@ -7618,6 +7696,8 @@ fn main() {
             video::video_support,
             window_tint,
             window_fullscreen,
+            window_float,
+            window_float_possible,
             photos::photos_upload,
             photos::photos_upload_cancel,
             photos::photos_album_create,

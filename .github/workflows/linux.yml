@@ -53,7 +53,7 @@ jobs:
           sudo apt-get -o Acquire::Retries=5 install -y --no-install-recommends \
             libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev librsvg2-dev \
             libsecret-1-dev libheif-dev libheif-plugin-libde265 libfuse3-dev pkg-config patchelf rpm file \
-            libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev \
+            libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev libpipewire-0.3-dev libclang-dev \
             gstreamer1.0-plugins-base gstreamer1.0-plugins-good gstreamer1.0-libav \
             xvfb xauth dbus
           # The GStreamer plugins are here for two reasons: the AppImage carries the ones
@@ -155,7 +155,7 @@ jobs:
           sudo apt-get -o Acquire::Retries=5 install -y --no-install-recommends \
             libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev librsvg2-dev \
             libsecret-1-dev libheif-dev libheif-plugin-libde265 libfuse3-dev pkg-config patchelf rpm file \
-            libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev \
+            libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev libpipewire-0.3-dev libclang-dev \
             gstreamer1.0-plugins-base gstreamer1.0-plugins-good gstreamer1.0-libav \
             xvfb xauth dbus
           # The GStreamer plugins are here for two reasons: the AppImage carries the ones
@@ -167,6 +167,10 @@ jobs:
           cache: npm
       - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          # Saved from main only: a tag's or a branch's copy is never read again, and only fills
+          # the repository's 10 GB of caches until main's own are evicted.
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - run: npm ci
       - name: Build the packages
         # The build machine's paths are never written into the program. The .deb and .rpm are

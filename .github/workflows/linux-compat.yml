@@ -8,8 +8,11 @@
 # The .deb and .rpm are also built on 64-bit ARM and installed in ARM containers of Ubuntu,
 # Debian and Fedora, for Linux on Apple Silicon Macs.
 #
-# Not on every push: by hand (Actions → Linux compatibility → Run workflow), and for a release
-# tag. The packages are built the way release.yml builds them: the .deb and .rpm on Ubuntu 24.04
+# On every release commit (a push to main that changes the version), beside CI, Windows checks
+# and Linux checks, so a release is proven on every distribution BEFORE it can be tagged
+# (tag.yml requires this run's success on the exact SHA; until 16 Nov it ran only after the tag,
+# while the release was already going out). Also by hand (Actions → Linux compatibility → Run
+# workflow) and weekly on main. The packages are built the way release.yml builds them: the .deb and .rpm on Ubuntu 24.04
 # — the oldest base whose libheif (1.17) the app accepts; Debian 12 (libheif 1.15, glibc 2.36)
 # cannot run them — and the AppImage in an Ubuntu 22.04 container (appimage.yml), carrying a
 # libheif of its own, so it runs on 22.04 and newer; there it is also started with no network.
@@ -20,8 +23,12 @@ name: Linux compatibility
 
 on:
   workflow_dispatch:
+  # On a release commit, which always changes the version in tauri.conf.json: tag.yml requires
+  # this run's success on that exact commit, and every other push to main is already proven by
+  # Linux checks. Ten distributions on every merge was the heaviest run for the least news.
   push:
-    tags: ["v*"]
+    branches: [main]
+    paths: ["src-tauri/tauri.conf.json"]
   # Every Monday, the same dry run on main: a tool that changed its output or a distribution
   # past its end of life shows up mid-week, never on release day (11 Nov: both did).
   schedule:
@@ -30,9 +37,13 @@ on:
 permissions:
   contents: read
 
+# A newer push to main cancels an older commit's run (only the newest needs checking), except a
+# release commit ("Skykeep x.y.z"): it keeps a group of its own, so nothing that lands after it
+# can cancel the runs its tag waits for (tag.yml). Before, every commit kept its run, and four
+# merges in a row ran sixteen workflows to the end.
 concurrency:
-  group: linux-compat-${{ github.ref }}
-  cancel-in-progress: true
+  group: linux-compat-${{ (startsWith(github.event.head_commit.message, 'Skykeep ') && github.sha) || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'push' && !startsWith(github.event.head_commit.message, 'Skykeep ') }}
 
 jobs:
   # On x86_64 and on 64-bit ARM (Apple Silicon Macs run Linux on aarch64): each architecture's
@@ -54,7 +65,7 @@ jobs:
           sudo apt-get -o Acquire::Retries=5 install -y --no-install-recommends \
             libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev librsvg2-dev \
             libsecret-1-dev libheif-dev libfuse3-dev pkg-config patchelf rpm file \
-            libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev \
+            libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev libpipewire-0.3-dev libclang-dev \
             gstreamer1.0-plugins-base gstreamer1.0-plugins-good gstreamer1.0-libav \
             libheif-plugin-libde265 libheif-examples libheif-plugin-x265
           # x265 only encodes the test's HEIC.
@@ -64,6 +75,10 @@ jobs:
           cache: npm
       - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          # Saved from main only: a tag's or a branch's copy is never read again, and only fills
+          # the repository's 10 GB of caches until main's own are evicted.
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - run: npm ci
       - name: Build the packages
         env:
@@ -194,12 +209,12 @@ jobs:
               DEBIAN_FRONTEND=noninteractive apt-get -o Acquire::Retries=5 install -y --no-install-recommends \
                 build-essential curl ca-certificates git nodejs npm \
                 libwebkit2gtk-4.1-dev libgtk-3-dev librsvg2-dev libsecret-1-dev \
-                libheif-dev libfuse3-dev libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev \
+                libheif-dev libfuse3-dev libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev libpipewire-0.3-dev libclang-dev \
                 pkg-config libayatana-appindicator3-dev ;;
             fedora45)
               dnf -y install gcc gcc-c++ make curl git nodejs npm \
                 webkit2gtk4.1-devel gtk3-devel librsvg2-devel libsecret-devel \
-                libheif-devel fuse3-devel gstreamer1-devel gstreamer1-plugins-base-devel \
+                libheif-devel fuse3-devel gstreamer1-devel gstreamer1-plugins-base-devel pipewire-devel clang-devel \
                 pkgconf-pkg-config libayatana-appindicator-gtk3-devel ;;
             tumbleweed)
               # Tumbleweed rolls: the image can be newer than a mirror that is mid-sync (6 Nov:
@@ -210,7 +225,7 @@ jobs:
               zypper -n install --no-recommends gcc gcc-c++ make curl git tar gzip \
                 nodejs-default npm-default \
                 webkitgtk3-devel gtk3-devel librsvg-devel libsecret-devel \
-                libheif-devel fuse3-devel gstreamer-devel gstreamer-plugins-base-devel \
+                libheif-devel fuse3-devel gstreamer-devel gstreamer-plugins-base-devel pipewire-devel clang-devel \
                 pkgconf-pkg-config libayatana-appindicator3-devel ;;
           esac
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1

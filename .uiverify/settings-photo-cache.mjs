@@ -3,7 +3,7 @@
 // holds now, and a disk short of space says the cap is held lower for now. Settings' one Clear
 // lets go of these too, and the line follows the backend's report.
 import { engine } from "./engine.mjs";
-import { SERVICES, installStub, openSettings } from "./stub.mjs";
+import { SERVICES, installStub, openSettings, openPane } from "./stub.mjs";
 const b = await engine.launch();
 let failures = 0;
 const ok = (p, m) => { console.log(`${p ? "PASS" : "FAIL"} ${m}`); if (!p) failures++; };
@@ -13,9 +13,10 @@ const open = async (init) => {
   await ctx.addInitScript(installStub, { screen: "library", services: SERVICES, twoFactor: null });
   const page = await ctx.newPage();
   page.on("pageerror", (e) => ok(false, `page error: ${e.message}`));
-  await page.goto(process.env.URL ?? "http://localhost:4173", { waitUntil: "networkidle" });
+  await page.goto(process.env.URL ?? process.env.BASE ?? "http://localhost:4173", { waitUntil: "networkidle" });
   await openSettings(page);
   await page.waitForSelector(".settings");
+  await openPane(page, "This Computer");
   await page.locator(".settings-row", { hasText: "Keep photos up to" }).waitFor();
   return { ctx, page };
 };
@@ -24,7 +25,8 @@ const row = (page) => page.locator(".settings-row", { hasText: "Keep photos up t
 {
   const { ctx, page } = await open();
   ok(/1\.8 GB of recently viewed photos/.test(await row(page).innerText()), `what the cache holds is said under the choice  ${JSON.stringify(await row(page).innerText())}`);
-  ok(await page.locator(".dash-card", { hasText: "This Computer" }).getByText("Keep photos up to").first().isVisible(), "the choice sits on This Computer's card, no sheet to open");
+  await openPane(page, "This Computer");
+  ok(await page.locator("#pane-computer").getByText("Keep photos up to").first().isVisible(), "the choice sits in This Computer, no sheet to open");
   ok((await page.locator(".details-sheet, [role='dialog']").count()) === 0, "nothing opens over the page to reach it");
   const picker = row(page).getByRole("button", { name: /Keep photos up to/ }).or(row(page).getByRole("combobox")).first();
   ok(/2 GB/.test(await picker.innerText()), "it rests on the cap chosen, in words");

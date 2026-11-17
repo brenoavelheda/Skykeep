@@ -825,3 +825,305 @@ fn a_restart_takes_the_folder_back_up() {
     let _ = std::fs::remove_dir_all(&place);
     let _ = std::fs::remove_dir_all(&out);
 }
+
+/// A folder already here under a name Apple's root also has (another client's, or a run that
+/// ended part way) is left as it is, and the root still opens whole; and a listing Apple fails
+/// once is asked for again on the next open, never marked whole with nothing in it (#44).
+#[test]
+fn a_clash_or_a_failed_listing_never_breaks_a_folder() {
+    struct Flaky(Apple, std::sync::atomic::AtomicUsize);
+    impl Remote for Flaky {
+        fn mkdir(&self, p: &DriveItem, n: &str) -> Fut<DriveItem> {
+            self.0.mkdir(p, n)
+        }
+        fn upload(&self, f: &DriveItem, p: &Path) -> Fut<DriveItem> {
+            self.0.upload(f, p)
+        }
+        fn replace(&self, i: &DriveItem, p: &Path) -> Fut<Option<DriveItem>> {
+            self.0.replace(i, p)
+        }
+        fn rename(&self, i: &DriveItem, n: &str) -> Fut<()> {
+            self.0.rename(i, n)
+        }
+        fn move_to(&self, i: &DriveItem, f: &DriveItem) -> Fut<()> {
+            self.0.move_to(i, f)
+        }
+        fn delete(&self, i: &DriveItem) -> Fut<()> {
+            self.0.delete(i)
+        }
+        fn read(&self, i: &DriveItem, o: u64, l: u64) -> Fut<Vec<u8>> {
+            self.0.read(i, o, l)
+        }
+        fn list(&self, folder: &str) -> Fut<Vec<DriveItem>> {
+            use std::sync::atomic::Ordering::SeqCst;
+            if folder != ROOT && self.1.load(SeqCst) > 0 {
+                self.1.fetch_sub(1, SeqCst);
+                return Box::pin(async { Err("Apple did not answer".to_string()) });
+            }
+            self.0.list(folder)
+        }
+    }
+    /// What `cmd /c dir` lists, and Windows' error text if it refused.
+    fn listed(path: &Path) -> (Vec<String>, String) {
+        let out = Command::new("cmd")
+            .args(["/c", "dir", "/b"])
+            .arg(path)
+            .output()
+            .unwrap();
+        (
+            String::from_utf8_lossy(&out.stdout)
+                .lines()
+                .map(str::to_string)
+                .collect(),
+            String::from_utf8_lossy(&out.stderr).trim().to_string(),
+        )
+    }
+    let mut sub = DriveItem {
+        drivewsid: "FOLDER::com.apple.CloudDocs::vault".into(),
+        kind: "FOLDER".into(),
+        name: "Vault".into(),
+        extension: None,
+        size: None,
+        ..file("x", "x", "x", 0)
+    };
+    sub.parent_id = Some(ROOT.into());
+    let other = DriveItem {
+        drivewsid: "FOLDER::com.apple.CloudDocs::notes".into(),
+        name: "Notes".into(),
+        ..sub.clone()
+    };
+    let root = vec![file("a", "first", "bin", 10), sub.clone(), other.clone()];
+    let inner: Vec<DriveItem> = (0..3)
+        .map(|n| {
+            let mut f = file(&format!("v{n}"), &format!("note {n}"), "md", 10);
+            f.parent_id = Some(other.drivewsid.clone());
+            f
+        })
+        .collect();
+    let tree: HashMap<String, Vec<DriveItem>> = [
+        (ROOT.to_string(), root.clone()),
+        (other.drivewsid.clone(), inner),
+    ]
+    .into();
+    let library = Arc::new(std::sync::Mutex::new(HashMap::from([(
+        ROOT.to_string(),
+        root,
+    )])));
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    let base = PathBuf::from(std::env::var("USERPROFILE").unwrap());
+    let place = base.join(format!("Skykeep clash {}", std::process::id()));
+    let out = std::env::temp_dir().join(format!("skykeep-clash-out-{}", std::process::id()));
+    std::fs::create_dir_all(&out).unwrap();
+    // A plain folder of the same name, with a file of the person's in it.
+    std::fs::create_dir_all(place.join("Vault")).unwrap();
+    std::fs::write(place.join("Vault").join("mine.md"), b"mine").unwrap();
+    let id = cloud::sync_root_id(&format!("clash{}", std::process::id())).unwrap();
+    let shown = Shown {
+        id: &id,
+        name: "Skykeep clash test",
+        icon: "%SystemRoot%\\system32\\imageres.dll,-1043",
+    };
+    let up = cloud::start(
+        &place,
+        &shown,
+        Provider::new(
+            Arc::new(Flaky(
+                Apple(tree, Arc::new(std::sync::Mutex::new(Vec::new()))),
+                std::sync::atomic::AtomicUsize::new(1),
+            )),
+            Arc::new(Library(Arc::clone(&library))),
+            rt.handle().clone(),
+            out.join("sending"),
+        ),
+    )
+    .expect("the folder comes up");
+    let (names, said) = listed(&place);
+    assert!(said.is_empty(), "the root opens despite the clash: {said}");
+    for name in ["first.bin", "Vault", "Notes"] {
+        assert!(
+            names.contains(&name.to_string()),
+            "{name} listed: {names:?}"
+        );
+    }
+    assert!(
+        listed(&place.join("Vault"))
+            .0
+            .contains(&"mine.md".to_string()),
+        "the person's own folder is left as it was"
+    );
+    // Apple fails the first listing: that open fails, the next one lists it whole.
+    let first = listed(&place.join("Notes"));
+    let (names, said) = listed(&place.join("Notes"));
+    assert!(
+        said.is_empty() && names.len() == 3,
+        "a folder whose first listing failed opens whole next time: {names:?} {said:?} (first: {first:?})"
+    );
+    drop(up);
+    cloud::unregister(&place, &id);
+    let _ = std::fs::remove_dir_all(&place);
+    let _ = std::fs::remove_dir_all(&out);
+}
+
+/// A folder opened in an earlier run is still brought up to date after a restart: Windows never
+/// asks for a folder it already has whole, so one known only from this run's opens was left
+/// stale for good — a note changed on the Mac never reached it.
+#[test]
+fn a_folder_opened_before_a_restart_stays_up_to_date() {
+    struct Known(Arc<std::sync::Mutex<HashMap<String, Vec<DriveItem>>>>);
+    impl Store for Known {
+        fn children(&self, folder: &str) -> Option<Vec<DriveItem>> {
+            self.0.lock().unwrap().get(folder).cloned()
+        }
+    }
+    let mut sub = DriveItem {
+        drivewsid: "FOLDER::com.apple.CloudDocs::vault".into(),
+        kind: "FOLDER".into(),
+        name: "Vault".into(),
+        extension: None,
+        size: None,
+        ..file("x", "x", "x", 0)
+    };
+    sub.parent_id = Some(ROOT.into());
+    let note = |n: &str| {
+        let mut f = file(n, n, "md", 10);
+        f.parent_id = Some(sub.drivewsid.clone());
+        f
+    };
+    let root = vec![sub.clone()];
+    let library = Arc::new(std::sync::Mutex::new(HashMap::from([
+        (ROOT.to_string(), root.clone()),
+        (sub.drivewsid.clone(), vec![note("one")]),
+    ])));
+    let tree: HashMap<String, Vec<DriveItem>> = library.lock().unwrap().clone();
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    let base = PathBuf::from(std::env::var("USERPROFILE").unwrap());
+    let place = base.join(format!("Skykeep fresh {}", std::process::id()));
+    let out = std::env::temp_dir().join(format!("skykeep-fresh-out-{}", std::process::id()));
+    std::fs::create_dir_all(&out).unwrap();
+    let id = cloud::sync_root_id(&format!("fresh{}", std::process::id())).unwrap();
+    let shown = Shown {
+        id: &id,
+        name: "Skykeep fresh test",
+        icon: "%SystemRoot%\\system32\\imageres.dll,-1043",
+    };
+    let provider = || {
+        Provider::new(
+            Arc::new(Apple(
+                tree.clone(),
+                Arc::new(std::sync::Mutex::new(Vec::new())),
+            )),
+            Arc::new(Known(Arc::clone(&library))),
+            rt.handle().clone(),
+            out.join("sending"),
+        )
+    };
+    let first = cloud::start(&place, &shown, provider()).expect("up");
+    assert_eq!(dir(&place.join("Vault")), vec!["one.md".to_string()]);
+    drop(first);
+    let second = cloud::start(&place, &shown, provider()).expect("up again");
+    // Changed at Apple after the restart: a second note in the folder opened before it.
+    library
+        .lock()
+        .unwrap()
+        .insert(sub.drivewsid.clone(), vec![note("one"), note("two")]);
+    let end = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    let mut seen = Vec::new();
+    while std::time::Instant::now() < end {
+        second.refresh(&sub.drivewsid);
+        seen = dir(&place.join("Vault"));
+        if seen.contains(&"two.md".to_string()) {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(200));
+    }
+    assert!(
+        seen.contains(&"two.md".to_string()),
+        "a folder opened before the restart shows Apple's change: {seen:?}"
+    );
+    drop(second);
+    cloud::unregister(&place, &id);
+    let _ = std::fs::remove_dir_all(&place);
+    let _ = std::fs::remove_dir_all(&out);
+}
+
+/// An empty folder opens in File Explorer, empty (QQueng, #44: every empty folder, in iCloud
+/// Drive and in iCloud Photos, failed with "The cloud operation is invalid").
+#[test]
+fn an_empty_folder_opens() {
+    struct Known(HashMap<String, Vec<DriveItem>>);
+    impl Store for Known {
+        fn children(&self, folder: &str) -> Option<Vec<DriveItem>> {
+            self.0.get(folder).cloned()
+        }
+    }
+    let mut empty = DriveItem {
+        drivewsid: "FOLDER::com.apple.CloudDocs::empty".into(),
+        kind: "FOLDER".into(),
+        name: "Empty".into(),
+        extension: None,
+        size: None,
+        child_count: Some(0),
+        ..file("x", "x", "x", 0)
+    };
+    empty.parent_id = Some(ROOT.into());
+    let tree: HashMap<String, Vec<DriveItem>> = [
+        (
+            ROOT.to_string(),
+            vec![file("a", "first", "bin", 10), empty.clone()],
+        ),
+        (empty.drivewsid.clone(), Vec::new()),
+    ]
+    .into();
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    let base = PathBuf::from(std::env::var("USERPROFILE").unwrap());
+    let place = base.join(format!("Skykeep empty {}", std::process::id()));
+    let out = std::env::temp_dir().join(format!("skykeep-empty-out-{}", std::process::id()));
+    std::fs::create_dir_all(&out).unwrap();
+    let id = cloud::sync_root_id(&format!("empty{}", std::process::id())).unwrap();
+    let shown = Shown {
+        id: &id,
+        name: "Skykeep empty test",
+        icon: "%SystemRoot%\\system32\\imageres.dll,-1043",
+    };
+    let up = cloud::start(
+        &place,
+        &shown,
+        Provider::new(
+            Arc::new(Apple(
+                tree.clone(),
+                Arc::new(std::sync::Mutex::new(Vec::new())),
+            )),
+            Arc::new(Known(tree)),
+            rt.handle().clone(),
+            out.join("sending"),
+        ),
+    )
+    .expect("up");
+    let out_cmd = Command::new("cmd")
+        .args(["/c", "dir", "/b"])
+        .arg(place.join("Empty"))
+        .output()
+        .unwrap();
+    let said = String::from_utf8_lossy(&out_cmd.stderr).trim().to_string();
+    let listed = String::from_utf8_lossy(&out_cmd.stdout).trim().to_string();
+    println!("REPORT empty folder: listed [{listed}] said [{said}]");
+    // An empty folder: `dir /b` says "File Not Found" for no entries, never a cloud error.
+    assert!(
+        !said.to_lowercase().contains("cloud"),
+        "an empty folder opens without a cloud error: {said}"
+    );
+    // And Windows holds it whole: opened again, it is not asked for again (no hang).
+    let again = Command::new("cmd")
+        .args(["/c", "dir", "/b"])
+        .arg(place.join("Empty"))
+        .output()
+        .unwrap();
+    println!(
+        "REPORT opened again: said [{}]",
+        String::from_utf8_lossy(&again.stderr).trim()
+    );
+    drop(up);
+    cloud::unregister(&place, &id);
+    let _ = std::fs::remove_dir_all(&place);
+    let _ = std::fs::remove_dir_all(&out);
+}

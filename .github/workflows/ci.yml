@@ -19,19 +19,21 @@ on:
   push:
     branches: [main]
     paths-ignore: ["**.md", "docs/media/**"]
+  # Every pull request runs, so `ci-ok` (below) always reports and main's ruleset can require it;
+  # `scope` skips the build for a change to words or README pictures alone.
   pull_request:
     branches: [main]
-    paths-ignore: ["**.md", "docs/media/**"]
 
 permissions:
   contents: read
 
-# A pull request's newer push cancels its older run. On main every commit keeps its own run (the
-# group is its SHA), as uv's CI does: a push landing while a release candidate was being checked
-# cancelled the candidate's run, the one its tag depends on.
+# A newer push to main cancels an older commit's run (only the newest needs checking), except a
+# release commit ("Skykeep x.y.z"): it keeps a group of its own, so nothing that lands after it
+# can cancel the runs its tag waits for (tag.yml). Before, every commit kept its run, and four
+# merges in a row ran sixteen workflows to the end.
 concurrency:
-  group: ci-${{ github.event.pull_request.number || github.sha }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  group: ci-${{ github.event.pull_request.number || (startsWith(github.event.head_commit.message, 'Skykeep ') && github.sha) || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' || (github.event_name == 'push' && !startsWith(github.event.head_commit.message, 'Skykeep ')) }}
 
 env:
   CARGO_TERM_COLOR: always
@@ -110,6 +112,7 @@ jobs:
       pull-requests: read
     outputs:
       full: ${{ steps.files.outputs.full }}
+      docs: ${{ steps.files.outputs.docs }}
     steps:
       - id: files
         env:
@@ -117,15 +120,27 @@ jobs:
           PR: ${{ github.event.pull_request.number }}
         run: |
           full=true
+          docs=false
           if [ -n "$PR" ]; then
             files=$(gh api --paginate "repos/$GITHUB_REPOSITORY/pulls/$PR/files" --jq '.[].filename')
-            if [ -n "$files" ] && ! grep -qvE '^src/locales/[^/]+\.json$' <<< "$files"; then full=false; fi
+            # Words or README pictures alone: nothing to build or test.
+            if [ -n "$files" ] && ! grep -qvE '(\.md$|^docs/media/)' <<< "$files"; then full=false; docs=true
+            # Translations alone: the type check and the language test (job `languages`).
+            elif [ -n "$files" ] && ! grep -qvE '^src/locales/[^/]+\.json$' <<< "$files"; then full=false
+            # The repository's own wiring alone (other workflows, the release script, templates):
+            # nothing of the app changed, and `published` still lints every workflow. Not when
+            # this file, the test-scope script or a shared action changed: those run these jobs,
+            # so the jobs run to prove them.
+            elif [ -n "$files" ] && ! grep -qvE '^\.github/' <<< "$files" \
+                && ! grep -qE '^\.github/(workflows/ci\.yml|scripts/test-scope\.py|actions/)' <<< "$files"; then
+              full=false; docs=true; fi
           fi
           echo "full=$full" | tee -a "$GITHUB_OUTPUT"
+          echo "docs=$docs" | tee -a "$GITHUB_OUTPUT"
 
   languages:
     needs: scope
-    if: needs.scope.outputs.full != 'true'
+    if: needs.scope.outputs.full != 'true' && needs.scope.outputs.docs != 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
@@ -158,8 +173,8 @@ jobs:
           sudo apt-get -o Acquire::Retries=5 install -y --no-install-recommends \
             libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev librsvg2-dev \
             libsecret-1-dev libheif-dev libheif-plugin-libde265 libfuse3-dev pkg-config \
-            libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev \
-            gstreamer1.0-plugins-base gstreamer1.0-plugins-good gstreamer1.0-libav
+            libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev libpipewire-0.3-dev libclang-dev \
+            gstreamer1.0-plugins-base gstreamer1.0-plugins-good gstreamer1.0-plugins-ugly gstreamer1.0-libav
           # The codecs, not only their headers: a video test reads an .mp4's first frames, and
           # Copy's test decodes a HEIC (libde265, which the .deb depends on too).
       - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
@@ -267,7 +282,7 @@ jobs:
         run: |
           sudo apt-get -o Acquire::Retries=5 update
           sudo apt-get -o Acquire::Retries=5 install -y --no-install-recommends pkg-config libheif-dev \
-            libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev
+            libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev libpipewire-0.3-dev libclang-dev
       # The repository's own Rust (rust-toolchain.toml), with the two phone targets added to it.
       - run: rustup target add aarch64-linux-android x86_64-linux-android
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
@@ -342,7 +357,7 @@ jobs:
           # check.sh refuses a name here that is not a suite it runs.
           suites="csp a11y boundary signout notes-compose notes-instant reminders-add-done
                   reminders-instant calendar-edits contacts-select drive-nav photos settings
-                  app-window updates device-approval"
+                  app-window side-pane updates device-approval"
           failed=()
           for t in $suites; do
             if node ".uiverify/$t.mjs" >"$shots/$t.log" 2>&1; then
@@ -363,3 +378,48 @@ jobs:
           path: ${{ runner.temp }}/shots
           if-no-files-found: ignore
           retention-days: 7
+
+  # The one check main's ruleset requires: every job above passed or was skipped on purpose by
+  # `scope`. One stable name, whatever the matrix or the scope ran (a skipped matrix job reports
+  # under another name, and a required check that never reports blocks a pull request forever).
+  # A release's pull request (release/x.y.z): the licence list the app shows must be the one its
+  # lockfiles give, as the tag gate (tag.yml) requires. Found there, a stale list refused the tag
+  # after every check had passed (0.1.27, #77); found here, it is fixed in the same pull request.
+  # Other pull requests are not held to it: a dependency update stays green until the list is
+  # rewritten for the release (tag.yml).
+  licences:
+    if: startsWith(github.head_ref, 'release/')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 22
+          cache: npm
+      - uses: taiki-e/install-action@cfdb7ed4ccc7c7dce37759eae89dc5674b469b39 # v2.90.3
+        with:
+          tool: cargo-about@0.9.3
+      - name: Licence list current
+        run: |
+          npm ci --no-audit --no-fund --ignore-scripts
+          npm run licences
+          if ! git diff --exit-code --stat src/licences.json; then
+            echo "::error::src/licences.json is out of date: run npm run licences and commit"
+            exit 1
+          fi
+
+  ci-ok:
+    if: always()
+    needs: [published, supply-chain, scope, languages, rust, android, web, licences]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - env:
+          RESULTS: ${{ toJSON(needs.*.result) }}
+        run: |
+          echo "$RESULTS"
+          if jq -e 'any(.[]; . == "failure" or . == "cancelled")' <<< "$RESULTS" >/dev/null; then
+            echo "::error::a check failed or was cancelled"; exit 1
+          fi
+

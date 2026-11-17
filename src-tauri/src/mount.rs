@@ -290,13 +290,18 @@ impl Store for AppStore {
         // Called on the folder's own threads, never the async runtime's: waiting is allowed —
         // but a file manager's every look at a name came here, and waited out whole sync passes
         // on the library's lock. On the folder's own reader it never waits on one.
-        if let Some(Ok(items)) = self.with_reader(|_, r| Some(r.library().drive_children(folder))) {
-            return Some(items);
+        // `None` for a folder this library was never told about (drive_children_known): it is
+        // listed from Apple then, never answered as empty (#44).
+        if let Some(Ok(items)) =
+            self.with_reader(|_, r| Some(r.library().drive_children_known(folder)))
+        {
+            return items;
         }
         let data = self.app.state::<Data>();
         data.0
-            .blocking_read(|library| library.drive_children(folder))
+            .blocking_read(|library| library.drive_children_known(folder))
             .ok()
+            .flatten()
     }
 
     fn version(&self) -> Option<u64> {
@@ -705,22 +710,40 @@ pub fn photos_changed() {
 
 /// At sign-out: each folder gone with the account — on Windows no longer in Explorer either.
 pub fn forget(app: &AppHandle) {
-    forget_folder(app, Which::Drive);
-    forget_folder(app, Which::Photos);
+    take_down(app, Which::Drive);
+    take_down(app, Which::Photos);
+}
+
+/// The folder turned off for good (switched off, signed out): after any start on its way has
+/// finished, so that start can never put it back up behind the switch (`STARTING`).
+fn take_down(app: &AppHandle, which: Which) {
+    let _one = STARTING[slot(which)]
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    forget_folder(app, which);
+}
+
+/// Whether the folder is still wanted: what the person last chose, as kept in the library.
+fn wanted(app: &AppHandle, which: Which) -> bool {
+    let data = app.state::<Data>();
+    let library = data.0.blocking_lock();
+    library.state(which.on_key()).ok().flatten().as_deref() == Some("1")
 }
 
 fn status(app: &AppHandle, which: Which, problem: Option<String>) -> FolderStatus {
     let at = mounted(which).unwrap_or_else(|| place(app, which));
-    let on = mounted(which).is_some();
+    let coming = COMING_UP[slot(which)].load(std::sync::atomic::Ordering::SeqCst) > 0;
+    let up = mounted(which).is_some();
+    let on = up || coming;
     // Up now, or a new answer: whatever went wrong at start is no longer the news.
     let launch = &mut LAUNCH_PROBLEM
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)[slot(which)];
-    if on || problem.is_some() {
+    if up || problem.is_some() {
         *launch = None;
     }
     let problem = problem.or_else(|| launch.clone());
-    let waiting = if which == Which::Drive && on {
+    let waiting = if which == Which::Drive && up {
         WRITES
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -789,19 +812,15 @@ fn slot(which: Which) -> usize {
 /// ready to take a folder yet); launch never waits on those.
 pub fn resume(app: &AppHandle) {
     for which in [Which::Drive, Which::Photos] {
-        let wanted = {
-            let data = app.state::<Data>();
-            let library = data.0.blocking_lock();
-            library.state(which.on_key()).ok().flatten().as_deref() == Some("1")
-        };
-        if !wanted || try_up(app, which) {
+        if !wanted(app, which) || try_up(app, which) {
             continue;
         }
         let app = app.clone();
         std::thread::spawn(move || {
             for wait in [2, 5] {
                 std::thread::sleep(std::time::Duration::from_secs(wait));
-                if try_up(&app, which) {
+                // Turned off meanwhile: never brought back up behind the switch.
+                if !wanted(&app, which) || try_up(&app, which) {
                     break;
                 }
             }
@@ -809,9 +828,35 @@ pub fn resume(app: &AppHandle) {
     }
 }
 
+/// Each folder brought up by one start at a time. The start at launch takes a while on Windows
+/// (registering with the shell, connecting); a second begun beside it — the switch turned on
+/// in Settings meanwhile — connected to the same folder again (#45). One asked for while
+/// another is on its way waits for it, and finds the folder up.
+static STARTING: [Mutex<()>; 2] = [Mutex::new(()), Mutex::new(())];
+/// How many starts of each folder are on their way: the folder reads as on meanwhile, so
+/// Settings opened during the start at launch never shows its switch off (#45).
+static COMING_UP: [std::sync::atomic::AtomicUsize; 2] = [
+    std::sync::atomic::AtomicUsize::new(0),
+    std::sync::atomic::AtomicUsize::new(0),
+];
+
+/// `start`, one at a time per folder (`STARTING`), said as on while it runs (`COMING_UP`).
+fn bring_up(app: &AppHandle, which: Which, at: &std::path::Path) -> Result<(), String> {
+    use std::sync::atomic::Ordering::SeqCst;
+    COMING_UP[slot(which)].fetch_add(1, SeqCst);
+    let result = {
+        let _one = STARTING[slot(which)]
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        start(app, which, at)
+    };
+    COMING_UP[slot(which)].fetch_sub(1, SeqCst);
+    result
+}
+
 /// One try at bringing a folder up; what went wrong kept for its row, and the log.
 fn try_up(app: &AppHandle, which: Which) -> bool {
-    let result = start(app, which, &place(app, which));
+    let result = bring_up(app, which, &place(app, which));
     if let Err(e) = &result {
         crate::diagnostics::note(&format!("folder {which:?} could not come up: {e}"));
     }
@@ -907,9 +952,9 @@ pub fn release() {
 async fn set(app: AppHandle, which: Which, on: bool) -> Result<FolderStatus, String> {
     tauri::async_runtime::spawn_blocking(move || {
         let problem = if on {
-            start(&app, which, &place(&app, which)).err()
+            bring_up(&app, which, &place(&app, which)).err()
         } else {
-            forget_folder(&app, which);
+            take_down(&app, which);
             None
         };
         let data = app.state::<Data>();

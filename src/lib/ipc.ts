@@ -295,6 +295,10 @@ export const api = {
   videoSupport: () => invoke<{ h264: boolean; hevc: boolean; missing: string[] }>("video_support"),
   /** The window full screen or back; answers whether it now is. */
   windowFullscreen: (on: boolean) => invoke<boolean>("window_fullscreen", { on }),
+  /** Float on Top: this window above the others (#40); answers whether it now is. */
+  windowFloat: (on: boolean) => invoke<boolean>("window_float", { on }),
+  /** Whether this desktop lets an app keep its window on top (not on Wayland). */
+  windowFloatPossible: () => invoke<boolean>("window_float_possible"),
   /** What the window shows pictures at, so the app makes them before they are shown. */
   photosPrepare: (shown: { cell: number; fit: boolean; stageW: number; stageH: number; dpr: number; view?: PhotoView | null }) =>
     invoke<void>("photos_prepare", { shown }),
@@ -667,6 +671,8 @@ export type ReminderList = {
   groupGuid?: string | null;
   /** Shown as a tile beside Today and Scheduled. */
   pinned?: boolean;
+  /** When it was pinned (ms since 1970): the tiles stand in that order, as on the phone. */
+  pinnedAt?: number | null;
   /** How the list orders its reminders: "manual", "displayDate_asc", … */
   sorting?: string | null;
 };
@@ -1221,6 +1227,27 @@ export type PhotoCache = {
 };
 /** Told when the cache changed in the background (a trim after the cap was lowered). */
 export const PHOTO_CACHE = "quince://photo-cache";
+/** The iPhone as this computer's camera and microphone (src-tauri/src/iphone.rs). */
+export type IphoneStatus = {
+  /** "unavailable": no iPhone link in this build or system. */
+  state: "unavailable" | "off" | "none" | "plugged" | "inUse" | "cameraPaused" | "micOnly";
+  cameraMs: number | null;
+  microphoneMs: number | null;
+  /** The camera for every program (a webcam device): "setUp" is one admin prompt away. */
+  everyApp: "ready" | "setUp" | "install";
+};
+
+/** Each change of the iPhone's state. */
+export const IPHONE_CHANGED = "quince://iphone";
+
+export const iphoneApi = {
+  status: () => invoke<IphoneStatus>("iphone_status"),
+  /** On or off, kept on this computer; off stops everything at once. */
+  set: (on: boolean) => invoke<IphoneStatus>("iphone_set", { on }),
+  /** One admin prompt; answers what is true after (cancelled leaves "setUp"). */
+  everyApp: () => invoke<IphoneStatus["everyApp"]>("iphone_every_app"),
+};
+
 export const photoCacheApi = {
   status: () => invoke<PhotoCache>("photos_cache_status"),
   /** Answers at once; the trim a lower cap starts reports through PHOTO_CACHE. */

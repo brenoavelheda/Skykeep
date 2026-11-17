@@ -112,7 +112,7 @@ export function installStub({ screen, services, twoFactor, calendarFixture, note
     { guid: "l1", title: "Daily", colour: "#63da38", ctag: null, sortOrder: 0, enabled: true },
     { guid: "l2", title: "GYM", colour: "#cc73e1", ctag: null, sortOrder: 1, enabled: true },
     { guid: "l3", title: "Life Goals", colour: "#1badf8", ctag: null, sortOrder: 2, enabled: true },
-  ].map((l) => ({ ...l, emblem: window.__listEmblems?.[l.guid] ?? null })); // a suite's own list icons
+  ].map((l) => ({ ...l, emblem: window.__listEmblems?.[l.guid] ?? null, ...(window.__listPins?.[l.guid] ?? {}) })); // a suite's own list icons and pins
   const reminderItems = !remindersFixture ? [] : [
     { guid: "r1", listGuid: "l1", title: "Plan tomorrow", notes: null,
       dueAt: base - 2 * HOUR, completedAt: null, priority: 0, flagged: false, parentGuid: null, etag: null },
@@ -170,6 +170,12 @@ export function installStub({ screen, services, twoFactor, calendarFixture, note
         case "auth_sign_in":     return screen === "code" ? "needs_two_factor" : "complete";
         case "auth_submit_code": window.__codeVia = "devices"; return null;
         case "account_services": return services;
+        // Float on Top (#40): possible unless a suite says this is Wayland; each ask recorded.
+        case "window_float_possible": return window.__floatPossible ?? true;
+        case "window_float": (window.__floatAsks ??= []).push(args.on); return args.on;
+        case "iphone_status": return window.__iphone ?? { state: "unavailable", cameraMs: null, microphoneMs: null, everyApp: "install" };
+        case "iphone_set": { window.__iphoneSet = [...(window.__iphoneSet ?? []), args.on]; window.__iphone = { ...(window.__iphone ?? {}), state: args.on ? "none" : "off", everyApp: window.__iphone?.everyApp ?? "setUp" }; return window.__iphone; }
+        case "iphone_every_app": window.__everyAppAsked = (window.__everyAppAsked ?? 0) + 1; if (window.__iphone) window.__iphone.everyApp = "ready"; return "ready";
         case "calendar_events": {
           window.__eventReads = (window.__eventReads ?? 0) + 1;
           // A heavy account, for measuring: `window.__manyEvents = n` adds n events spread over
@@ -1286,7 +1292,6 @@ export function installStub({ screen, services, twoFactor, calendarFixture, note
         // The desktop's Increase Contrast, from the Settings portal (appearance.rs).
         case "system_contrast":  return window.__contrast ?? false;
         // LC_TIME, LANG (appearance.rs): null leaves the engine's own language.
-        case "system_time_locale": return window.__timeLocale ?? null;
         case "network_reach": return { accounts: window.__reachAccounts ?? [], apple: ["apple.com", "icloud.com", "icloud-content.com"], subscribed: window.__reachSubscribed ?? [],
           updates: (window.__update?.install ?? "here") === "here" ? ["github.com", "release-assets.githubusercontent.com", "objects.githubusercontent.com"] : [] };
         // Skykeep's own updates (updates.rs). A test sets `window.__update` (an offer, an install
@@ -1336,6 +1341,10 @@ export function installStub({ screen, services, twoFactor, calendarFixture, note
         }
         // One refresh covers every service, so there is one command to stub rather than
         // a pair per screen.
+        // Part of the library refreshed (a screen opened stale): nothing new to report. Without
+        // it a stale screen showed "unstubbed command: sync_some" in its sidebar (README shots).
+        case "sync_some":
+          return { services: [], asOf: null, tookMs: 0 };
         case "sync_all":
         case "sync_status":
           return {
@@ -1460,6 +1469,12 @@ export async function openScreen(page, name) {
 }
 
 /* Settings: Skykeep's own window, the address with no app (docs/apps-as-windows.md). */
+/* One of Settings' sections, from its sidebar ("This Computer", "Backup", …; Home is the account). */
+export async function openPane(page, name) {
+  await page.getByRole("tab", { name, exact: true }).click();
+  await page.locator(".prefs-pane:not([hidden])").first().waitFor();
+}
+
 export async function openSettings(page) {
   const url = new URL(page.url());
   if (url.searchParams.get("app")) {
