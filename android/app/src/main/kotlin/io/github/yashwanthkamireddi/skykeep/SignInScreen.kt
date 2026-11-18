@@ -88,12 +88,14 @@ fun SignInScreen(account: Account, onSignedIn: () -> Unit) {
     }
   }
 
+  // The app's own name, uNotes cloud in its flavor (strings.xml).
+  val app = androidx.compose.ui.res.stringResource(R.string.app_name)
   Column(
     Modifier.fillMaxSize().systemBarsPadding().imePadding().verticalScroll(rememberScrollState())
       .padding(horizontal = 28.dp).padding(top = 32.dp, bottom = 24.dp).widthIn(max = 460.dp),
     verticalArrangement = Arrangement.spacedBy(16.dp),
   ) {
-    Image(painterResource(R.mipmap.ic_launcher_foreground), contentDescription = "Skykeep", modifier = Modifier.size(88.dp).offset(x = (-16).dp))
+    Image(painterResource(R.mipmap.ic_launcher_foreground), contentDescription = app, modifier = Modifier.size(88.dp).offset(x = (-16).dp))
     when (step) {
       Step.Credentials -> {
         Text("Sign in with your Apple Account", style = MaterialTheme.typography.headlineMedium)
@@ -137,12 +139,12 @@ fun SignInScreen(account: Account, onSignedIn: () -> Unit) {
           Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
             Text("How your password is handled", style = MaterialTheme.typography.titleSmall)
             Text(
-              "Skykeep signs in the way Apple's own sign-in does (SRP): it proves your password to Apple without sending it. To stay signed in, it keeps your password and session sealed with a key in this phone's Android Keystore, left out of backups, and erases them when you sign out. It talks only to Apple.",
+              "$app signs in the way Apple's own sign-in does (SRP): it proves your password to Apple without sending it. To stay signed in, it keeps your password and session sealed with a key in this phone's Android Keystore, left out of backups, and erases them when you sign out. It talks only to Apple.",
               style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
           }
         }
-        Text("Skykeep is not made by or affiliated with Apple.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        Text("$app is not made by or affiliated with Apple.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
       }
       Step.Code -> {
         // Where Apple can send a code: its devices, or a trusted phone number by text. Someone
@@ -158,7 +160,7 @@ fun SignInScreen(account: Account, onSignedIn: () -> Unit) {
         Text("Enter the code", style = MaterialTheme.typography.headlineMedium)
         Text(
           when {
-            o?.securityKey == true -> "This Apple Account signs in with a security key, which Skykeep can't use yet. Sign in at icloud.com in a browser with your key instead."
+            o?.securityKey == true -> "This Apple Account signs in with a security key, which $app can't use yet. Sign in at icloud.com in a browser with your key instead."
             o?.tooManyCodesSent == true -> "Apple has sent too many codes for now. Wait a while, then try again."
             texted != null -> "Apple sent a six-digit code by text to ${texted!!.maskedNumber}. Type it here."
             devices -> "Apple sent a six-digit code to your iPhone, iPad or Mac. Allow the sign-in there, then type the code here."

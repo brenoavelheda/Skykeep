@@ -1,4 +1,13 @@
 <resources>
     <!-- The name on the phone. The suite keeps its own in src/main. -->
     <string name="app_name">uNotes cloud</string>
+    <!-- The welcome before signing in: Notes alone. -->
+    <string name="welcome_title">Your iCloud notes, on Android</string>
+    <string name="welcome_body">Your notes and folders from iCloud on this phone, kept in sync with your iPhone, iPad and Mac, both ways.</string>
+    <string name="welcome_offline">Works offline. Your notes open from this phone, and changes send when you\'re back online.</string>
+    <!-- GPL-3.0: what uNotes cloud is built from stays said, by name. -->
+    <string name="licences_intro">uNotes cloud is built from Skykeep and, like it, is free software under the GPL-3.0. Both are built on the work below, each under its own licence.</string>
+    <!-- A file in a note that did not open (src/main says why each exists). -->
+    <string name="note_attachment_unsupported">uNotes cloud can\'t open this kind of attachment.</string>
+    <string name="note_attachment_failed">uNotes cloud couldn\'t open this file: %1$s</string>
 </resources>

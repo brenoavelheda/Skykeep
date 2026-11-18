@@ -64,7 +64,8 @@ class MainActivity : ComponentActivity() {
     if (!BuildConfig.NOTES_ONLY) widgetLaunch = WidgetIntents.parseLaunchTarget(intent)
     enableEdgeToEdge()
     setContent {
-      SkykeepTheme {
+      // uNotes cloud in Notes' colours from the welcome on; the suite as it is.
+      SkykeepTheme { io.github.yashwanthkamireddi.skykeep.ui.NotesOnlyTheme(BuildConfig.NOTES_ONLY) {
         Surface(modifier = Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
           var stage by remember { mutableStateOf(Stage.Starting) }
           var engine by remember { mutableStateOf<Account?>(null) }
@@ -145,7 +146,7 @@ class MainActivity : ComponentActivity() {
             )
           }
         }
-      }
+      } }
     }
   }
 

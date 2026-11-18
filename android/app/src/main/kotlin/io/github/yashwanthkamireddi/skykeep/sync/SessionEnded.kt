@@ -53,7 +53,7 @@ object SessionEnded {
     if (system.getNotificationChannel(CHANNEL) == null) {
       system.createNotificationChannel(
         NotificationChannel(CHANNEL, "Your account", NotificationManager.IMPORTANCE_DEFAULT).apply {
-          description = "When Skykeep needs you to sign in again to keep syncing"
+          description = "When ${context.getString(R.string.app_name)} needs you to sign in again to keep syncing"
           setSound(null, null)
         },
       )
@@ -66,7 +66,7 @@ object SessionEnded {
     )
     val note = NotificationCompat.Builder(context, CHANNEL)
       .setSmallIcon(R.drawable.ic_sync)
-      .setContentTitle("Sign in to Skykeep again to keep syncing")
+      .setContentTitle("Sign in to ${context.getString(R.string.app_name)} again to keep syncing")
       .setContentText("Everything on this phone is still here.")
       .setCategory(NotificationCompat.CATEGORY_STATUS)
       .setContentIntent(open)

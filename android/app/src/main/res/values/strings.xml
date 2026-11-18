@@ -1,5 +1,11 @@
 <resources>
     <string name="app_name">Skykeep</string>
+    <!-- The welcome before signing in, and the licences page: each flavor's own words (uNotes
+         cloud's in src/unotes). -->
+    <string name="welcome_title">Your iCloud, on Android</string>
+    <string name="welcome_body">Reminders, Notes, Photos and iCloud Drive in Skykeep; your contacts and calendars in this phone\'s own apps. All kept in sync with your iPhone, iPad and Mac, both ways.</string>
+    <string name="welcome_offline">Works offline. Everything opens from this phone, and changes send when you\'re back online.</string>
+    <string name="licences_intro">Skykeep is free software under the GPL-3.0. It is built on the work below, each under its own licence.</string>
     <!-- The Share sheet entry: what it does, as the desktop's right-click menu says it. -->
     <string name="send_to_iphone">Send to iPhone</string>
     <!-- Home screen widgets -->

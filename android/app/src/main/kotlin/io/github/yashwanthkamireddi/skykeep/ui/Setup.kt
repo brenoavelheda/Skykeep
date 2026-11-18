@@ -77,19 +77,21 @@ private fun Fact(icon: Int, text: String) {
  */
 @Composable
 fun Welcome(onContinue: () -> Unit) {
+  // What the app is, in its flavor's words (uNotes cloud's are Notes alone: strings.xml).
+  val app = androidx.compose.ui.res.stringResource(R.string.app_name)
   Column(Modifier.fillMaxSize().systemBarsPadding().padding(horizontal = 28.dp).padding(top = 40.dp, bottom = 20.dp)) {
-    Image(painterResource(R.mipmap.ic_launcher_foreground), contentDescription = "Skykeep", modifier = Modifier.size(112.dp).offset(x = (-20).dp))
+    Image(painterResource(R.mipmap.ic_launcher_foreground), contentDescription = app, modifier = Modifier.size(112.dp).offset(x = (-20).dp))
     Spacer(Modifier.height(12.dp))
-    Text("Your iCloud, on Android", style = MaterialTheme.typography.headlineLarge)
+    Text(androidx.compose.ui.res.stringResource(R.string.welcome_title), style = MaterialTheme.typography.headlineLarge)
     Spacer(Modifier.height(12.dp))
     Text(
-      "Reminders, Notes, Photos and iCloud Drive in Skykeep; your contacts and calendars in this phone's own apps. All kept in sync with your iPhone, iPad and Mac, both ways.",
+      androidx.compose.ui.res.stringResource(R.string.welcome_body),
       style = MaterialTheme.typography.bodyLarge, color = MaterialTheme.colorScheme.onSurfaceVariant,
     )
     Spacer(Modifier.height(28.dp))
     Column(verticalArrangement = Arrangement.spacedBy(16.dp)) {
-      Fact(R.drawable.ic_cloud_off, "Works offline. Everything opens from this phone, and changes send when you're back online.")
-      Fact(R.drawable.ic_lock, "Talks only to Apple. No Skykeep account, no ads, no tracking.")
+      Fact(R.drawable.ic_cloud_off, androidx.compose.ui.res.stringResource(R.string.welcome_offline))
+      Fact(R.drawable.ic_lock, "Talks only to Apple. No $app account, no ads, no tracking.")
       Fact(R.drawable.ic_check_circle, "Free and open source, made by an independent developer. Not made by or affiliated with Apple.")
     }
     Spacer(Modifier.weight(1f))

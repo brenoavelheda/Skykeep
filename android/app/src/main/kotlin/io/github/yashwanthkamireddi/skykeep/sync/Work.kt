@@ -78,7 +78,7 @@ object Work {
       manager.createNotificationChannel(
         when (channel) {
           CHANNEL -> NotificationChannel(CHANNEL, "Syncing", NotificationManager.IMPORTANCE_MIN).apply {
-            description = "Shown while Skykeep syncs with iCloud, only when Android asks for it"
+            description = "Shown while ${context.getString(R.string.app_name)} syncs with iCloud, only when Android asks for it"
           }
           else -> NotificationChannel(channel, "Uploads and downloads", NotificationManager.IMPORTANCE_LOW).apply {
             description = "Files sent to your iPhone, and how it went"

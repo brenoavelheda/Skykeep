@@ -97,7 +97,7 @@ fun LicencesPage(onBack: () -> Unit) {
     item {
       Text("Open-source licences", style = MaterialTheme.typography.headlineLarge, modifier = Modifier.padding(start = 4.dp, bottom = 8.dp))
       Text(
-        "Skykeep is free software under the GPL-3.0. It is built on the work below, each under its own licence.",
+        androidx.compose.ui.res.stringResource(R.string.licences_intro),
         style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant,
         modifier = Modifier.padding(start = 4.dp, bottom = 16.dp),
       )
