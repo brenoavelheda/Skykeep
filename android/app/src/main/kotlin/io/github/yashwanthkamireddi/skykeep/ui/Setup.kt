@@ -48,11 +48,17 @@ import io.github.yashwanthkamireddi.skykeep.sync.ensureAccount
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 
-/** The access the sync needs: the phone's Contacts and Calendar. */
-val NEEDED = arrayOf(
-  Manifest.permission.READ_CONTACTS, Manifest.permission.WRITE_CONTACTS,
-  Manifest.permission.READ_CALENDAR, Manifest.permission.WRITE_CALENDAR,
-)
+/**
+ * The access the sync needs: the phone's Contacts and Calendar. uNotes cloud syncs Notes only,
+ * so it needs none of it — and [allowed] is then true, which keeps Setup's permission screen out
+ * of its way.
+ */
+val NEEDED: Array<String> =
+  if (io.github.yashwanthkamireddi.skykeep.BuildConfig.NOTES_ONLY) emptyArray()
+  else arrayOf(
+    Manifest.permission.READ_CONTACTS, Manifest.permission.WRITE_CONTACTS,
+    Manifest.permission.READ_CALENDAR, Manifest.permission.WRITE_CALENDAR,
+  )
 
 fun allowed(context: Context) = NEEDED.all { ContextCompat.checkSelfPermission(context, it) == PackageManager.PERMISSION_GRANTED }
 

@@ -1,0 +1,50 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- uNotes cloud: the Notes module as its own app. Upstream's manifest stays as it is; this
+     overlay takes out what Notes does not use, by name, so a component or a permission added
+     upstream is a decision here instead of something that quietly ships. Kept: the account and
+     its Notes sync adapter, the Notes provider, MainActivity, the FileProvider that opens a
+     note's attachments, WorkManager's foreground service, and the network, sync-settings,
+     notification and foreground-service permissions those need. -->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
+
+    <!-- Contacts and Calendar are the phone's own apps, outside uNotes cloud. -->
+    <uses-permission android:name="android.permission.READ_CONTACTS" tools:node="remove" />
+    <uses-permission android:name="android.permission.WRITE_CONTACTS" tools:node="remove" />
+    <uses-permission android:name="android.permission.READ_CALENDAR" tools:node="remove" />
+    <uses-permission android:name="android.permission.WRITE_CALENDAR" tools:node="remove" />
+    <!-- Reminders' alerts and their BOOT_COMPLETED re-arming. -->
+    <uses-permission android:name="android.permission.SCHEDULE_EXACT_ALARM" tools:node="remove" />
+    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" tools:node="remove" />
+    <!-- Photo backup's camera roll. -->
+    <uses-permission android:name="android.permission.READ_MEDIA_IMAGES" tools:node="remove" />
+    <uses-permission android:name="android.permission.READ_MEDIA_VIDEO" tools:node="remove" />
+    <uses-permission android:name="android.permission.ACCESS_MEDIA_LOCATION" tools:node="remove" />
+    <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" tools:node="remove" />
+    <!-- Send to iPhone's user-initiated job. -->
+    <uses-permission android:name="android.permission.RUN_USER_INITIATED_JOBS" tools:node="remove" />
+
+    <application>
+        <!-- Send to iPhone: the suite's Share sheet target. -->
+        <activity android:name=".ui.ShareActivity" tools:node="remove" />
+
+        <!-- Contacts, Calendar, Reminders, Photos and Drive, each with its provider or adapter. -->
+        <service android:name=".sync.ContactsSyncService" tools:node="remove" />
+        <provider android:name=".sync.RemindersProvider" tools:node="remove" />
+        <service android:name=".sync.RemindersSyncService" tools:node="remove" />
+        <provider android:name=".sync.PhotosProvider" tools:node="remove" />
+        <service android:name=".sync.PhotosSyncService" tools:node="remove" />
+        <provider android:name=".sync.DriveProvider" tools:node="remove" />
+        <service android:name=".sync.SendJob" tools:node="remove" />
+        <receiver android:name=".sync.ReminderAlertReceiver" tools:node="remove" />
+        <service android:name=".sync.CalendarSyncService" tools:node="remove" />
+
+        <!-- Reminders' home screen widgets. -->
+        <activity android:name=".widgets.QuickReminderActivity" tools:node="remove" />
+        <activity android:name=".widgets.RemindersWidgetConfigActivity" tools:node="remove" />
+        <receiver android:name=".widgets.RemindersWidgetReceiver" tools:node="remove" />
+        <receiver android:name=".widgets.QuickAddWidgetReceiver" tools:node="remove" />
+        <receiver android:name=".widgets.AgendaWidgetReceiver" tools:node="remove" />
+    </application>
+
+</manifest>

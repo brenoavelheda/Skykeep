@@ -20,6 +20,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import io.github.yashwanthkamireddi.skykeep.sync.SessionEnded
 import io.github.yashwanthkamireddi.skykeep.ui.MainScreens
+import io.github.yashwanthkamireddi.skykeep.ui.NotesOnlyScreens
 import io.github.yashwanthkamireddi.skykeep.ui.Setup
 import io.github.yashwanthkamireddi.skykeep.ui.Welcome
 import io.github.yashwanthkamireddi.skykeep.ui.allowed
@@ -29,6 +30,7 @@ import io.github.yashwanthkamireddi.skykeep.widgets.WidgetIntents
 import io.github.yashwanthkamireddi.skykeep.widgets.WidgetLaunchTarget
 import io.github.yashwanthkamireddi.skykeep.widgets.WidgetUpdates
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import uniffi.quince_mobile.Account
 import uniffi.quince_mobile.Reopened
@@ -43,20 +45,32 @@ private fun welcomed(context: Context) =
 private fun markWelcomed(context: Context) =
   context.getSharedPreferences("settings", Context.MODE_PRIVATE).edit().putBoolean("welcomed", true).apply()
 
+/**
+ * uNotes cloud's phone account, made where Setup makes the suite's: there are no permissions to
+ * ask for, but Notes still syncs under an Android account.
+ */
+private suspend fun ensureNotesAccount(context: Context, engine: Account) {
+  withContext(Dispatchers.IO) {
+    val tag = engine.accountTag() ?: return@withContext
+    io.github.yashwanthkamireddi.skykeep.sync.ensureAccount(context, engine.appleId() ?: "iCloud", tag)
+  }
+}
+
 class MainActivity : ComponentActivity() {
   private var widgetLaunch by mutableStateOf<WidgetLaunchTarget?>(null)
 
   override fun onCreate(savedInstanceState: Bundle?) {
     super.onCreate(savedInstanceState)
-    widgetLaunch = WidgetIntents.parseLaunchTarget(intent)
+    if (!BuildConfig.NOTES_ONLY) widgetLaunch = WidgetIntents.parseLaunchTarget(intent)
     enableEdgeToEdge()
     setContent {
       SkykeepTheme {
         Surface(modifier = Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
           var stage by remember { mutableStateOf(Stage.Starting) }
           var engine by remember { mutableStateOf<Account?>(null) }
+          val scope = androidx.compose.runtime.rememberCoroutineScope()
           LaunchedEffect(Unit) {
-            withContext(Dispatchers.IO) { WidgetUpdates.publishPreviewsIfNeeded(applicationContext) }
+            if (!BuildConfig.NOTES_ONLY) withContext(Dispatchers.IO) { WidgetUpdates.publishPreviewsIfNeeded(applicationContext) }
             // From the phone alone: a kept session opens the library at once, offline included;
             // Apple is asked behind it, and only Apple refusing the session (or Apple wanting a
             // code) brings sign-in up. The screen never waits on the network to draw.
@@ -73,6 +87,8 @@ class MainActivity : ComponentActivity() {
             stage = when {
               !kept -> if (welcomed(applicationContext)) Stage.SignIn else Stage.Welcome
               signInAsked -> Stage.SignIn
+              // uNotes cloud asks for no phone access: there is no Setup screen to pass through.
+              BuildConfig.NOTES_ONLY -> Stage.Main
               // Signed in, but the phone not set up yet (no account here, or no access).
               phoneAccount(applicationContext) == null || !allowed(applicationContext) -> Stage.Setup
               else -> Stage.Main
@@ -81,6 +97,10 @@ class MainActivity : ComponentActivity() {
               val where = withContext(Dispatchers.IO) { runCatching { a.reopen() }.getOrNull() }
               // A failure to ask (not Apple's answer) leaves the library open: the next sync tries again.
               if (where == Reopened.SIGN_IN || where == Reopened.CODE) stage = Stage.SignIn
+            }
+            // uNotes cloud: the account Notes syncs under is made here, while the notes open.
+            if (kept && stage == Stage.Main && BuildConfig.NOTES_ONLY && phoneAccount(applicationContext) == null) {
+              ensureNotesAccount(applicationContext, a)
             }
             // An account made before something synced (Reminders, 10 Nov) is given it now.
             // Only the signed-in Apple Account's own phone account, never another's kept here.
@@ -92,8 +112,8 @@ class MainActivity : ComponentActivity() {
                 }
               }
             }
-            // Drive saves an earlier run held and had not sent yet go now.
-            if (kept) {
+            // Drive saves an earlier run held and had not sent yet go now; widgets are the suite's.
+            if (kept && !BuildConfig.NOTES_ONLY) {
               io.github.yashwanthkamireddi.skykeep.sync.DriveWrites.resume(applicationContext)
               WidgetUpdates.scheduleAll(applicationContext)
             }
@@ -105,13 +125,19 @@ class MainActivity : ComponentActivity() {
               // Signed in again: background syncing goes on (Setup gives the account its work
               // back) and "Sign in again" is taken down.
               SessionEnded.clear(applicationContext)
-              stage = Stage.Setup
+              if (BuildConfig.NOTES_ONLY) {
+                // No permissions to ask: the account Notes syncs under is made, then the notes.
+                val signedIn = engine!!
+                scope.launch { ensureNotesAccount(applicationContext, signedIn); stage = Stage.Main }
+              } else stage = Stage.Setup
             }
             Stage.Setup -> Setup {
-              WidgetUpdates.scheduleAll(applicationContext)
+              if (!BuildConfig.NOTES_ONLY) WidgetUpdates.scheduleAll(applicationContext)
               stage = Stage.Main
             }
-            Stage.Main -> MainScreens(
+            Stage.Main -> if (BuildConfig.NOTES_ONLY) {
+              NotesOnlyScreens(engine = engine!!, onSignedOut = { stage = Stage.SignIn })
+            } else MainScreens(
               engine = engine!!,
               widgetLaunch = widgetLaunch,
               onWidgetLaunchConsumed = { widgetLaunch = null },
@@ -126,6 +152,6 @@ class MainActivity : ComponentActivity() {
   override fun onNewIntent(intent: Intent) {
     super.onNewIntent(intent)
     setIntent(intent)
-    WidgetIntents.parseLaunchTarget(intent)?.let { widgetLaunch = it }
+    if (!BuildConfig.NOTES_ONLY) WidgetIntents.parseLaunchTarget(intent)?.let { widgetLaunch = it }
   }
 }

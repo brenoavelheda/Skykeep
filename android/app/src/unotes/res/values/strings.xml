@@ -1,0 +1,4 @@
+<resources>
+    <!-- The name on the phone. The suite keeps its own in src/main. -->
+    <string name="app_name">uNotes cloud</string>
+</resources>

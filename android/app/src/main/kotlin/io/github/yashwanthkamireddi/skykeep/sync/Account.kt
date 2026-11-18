@@ -17,8 +17,14 @@ const val SYNC_EVERY_SECONDS = 60L * 60
 fun syncEvery(context: Context): Long =
   context.getSharedPreferences("settings", Context.MODE_PRIVATE).getLong("syncEvery", SYNC_EVERY_SECONDS)
 
-/** What the account syncs: Contacts, Calendar, and Reminders and Notes (the engine's own library). */
-val SYNCED = listOf(ContactsContract.AUTHORITY, CalendarContract.AUTHORITY, REMINDERS_AUTHORITY, NOTES_AUTHORITY, PHOTOS_AUTHORITY)
+/**
+ * What the account syncs: Contacts, Calendar, and Reminders and Notes (the engine's own library).
+ * uNotes cloud syncs Notes alone: the other services are not in its manifest, so an account made
+ * syncable for them would show a sync Android can never run.
+ */
+val SYNCED =
+  if (io.github.yashwanthkamireddi.skykeep.BuildConfig.NOTES_ONLY) listOf(NOTES_AUTHORITY)
+  else listOf(ContactsContract.AUTHORITY, CalendarContract.AUTHORITY, REMINDERS_AUTHORITY, NOTES_AUTHORITY, PHOTOS_AUTHORITY)
 
 /** A new interval: kept, and given to the account's periodic work (SyncWork.every). */
 fun setSyncEvery(context: Context, account: Account?, seconds: Long) {
@@ -59,8 +65,9 @@ fun ensureAccount(context: Context, appleId: String, tag: String): Account {
   // iCloud sends no push a third-party app can receive, so the account syncs on a schedule:
   // WorkManager batches it with other apps' work, waits for a network, and skips a low battery.
   SyncWork.every(context, account, tag, syncEvery(context))
-  // New photos noticed as they are taken, when backup is on.
-  PhotoBackup.schedule(context)
+  // New photos noticed as they are taken, when backup is on: the suite's, as uNotes cloud has no
+  // Photos module and asks for no media access.
+  if (!io.github.yashwanthkamireddi.skykeep.BuildConfig.NOTES_ONLY) PhotoBackup.schedule(context)
   return account
 }
 

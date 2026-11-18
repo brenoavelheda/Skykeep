@@ -16,8 +16,14 @@ import androidx.compose.ui.platform.LocalContext
 import io.github.yashwanthkamireddi.skykeep.sync.Outcome
 import io.github.yashwanthkamireddi.skykeep.sync.SyncWork
 
-/** Contacts and Calendar, the two things the phone's own apps show from iCloud. */
-val AUTHORITIES = listOf(ContactsContract.AUTHORITY, CalendarContract.AUTHORITY, io.github.yashwanthkamireddi.skykeep.sync.REMINDERS_AUTHORITY, io.github.yashwanthkamireddi.skykeep.sync.NOTES_AUTHORITY, io.github.yashwanthkamireddi.skykeep.sync.PHOTOS_AUTHORITY)
+/**
+ * Contacts and Calendar, the two things the phone's own apps show from iCloud. uNotes cloud has
+ * neither, so its list is Notes alone: every walk of it (sync now, the progress on Setup) then
+ * asks nothing of a service the app does not carry.
+ */
+val AUTHORITIES =
+  if (io.github.yashwanthkamireddi.skykeep.BuildConfig.NOTES_ONLY) listOf(io.github.yashwanthkamireddi.skykeep.sync.NOTES_AUTHORITY)
+  else listOf(ContactsContract.AUTHORITY, CalendarContract.AUTHORITY, io.github.yashwanthkamireddi.skykeep.sync.REMINDERS_AUTHORITY, io.github.yashwanthkamireddi.skykeep.sync.NOTES_AUTHORITY, io.github.yashwanthkamireddi.skykeep.sync.PHOTOS_AUTHORITY)
 
 /** The Skykeep account on this phone, once the first sync has made it. */
 fun phoneAccount(context: Context): Account? = io.github.yashwanthkamireddi.skykeep.sync.currentAccount(context)

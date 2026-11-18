@@ -1,3 +1,10 @@
+import org.gradle.api.DefaultTask
+import org.gradle.api.file.DirectoryProperty
+import org.gradle.api.provider.Property
+import org.gradle.api.tasks.Input
+import org.gradle.api.tasks.OutputDirectory
+import org.gradle.api.tasks.TaskAction
+
 plugins {
   alias(libs.plugins.android.application)
   alias(libs.plugins.compose.compiler)
@@ -24,9 +31,22 @@ android {
     versionName = version
     versionCode = major * 1_000_000 + minor * 1_000 + patch
     testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
-    // The account type and sync authorities, from the app's id, for the XML that can't read it.
-    resValue("string", "account_type", "$applicationId.account")
-    for (s in listOf("reminders", "notes", "photos")) resValue("string", "authority_$s", "$applicationId.$s")
+  }
+
+  // Two apps from one code base: the suite as it is, and uNotes cloud, which is Notes alone.
+  // A flavor sets only its id and the build flag; the manifest overlay, the sync list and the
+  // start-up screens read the flag, so upstream's files gain a few checks, not a second copy.
+  flavorDimensions += "app"
+  productFlavors {
+    create("suite") {
+      // Today's app, unchanged: its id is the default one.
+      buildConfigField("boolean", "NOTES_ONLY", "false")
+    }
+    create("unotes") {
+      // Installs beside Skykeep, with its own sign-in and library.
+      applicationId = "io.github.brenoavelheda.unotes"
+      buildConfigField("boolean", "NOTES_ONLY", "true")
+    }
   }
 
   buildTypes {
@@ -46,9 +66,6 @@ android {
     create("verify") {
       initWith(getByName("release"))
       applicationIdSuffix = ".verify"
-      val id = "io.github.yashwanthkamireddi.skykeep.verify"
-      resValue("string", "account_type", "$id.account")
-      for (s in listOf("reminders", "notes", "photos")) resValue("string", "authority_$s", "$id.$s")
       signingConfig = signingConfigs.getByName("debug")
       matchingFallbacks += listOf("release")
       // Run on the emulator too, so both engines, where the release keeps only the phones' one.
@@ -73,6 +90,54 @@ android {
     resources {
       excludes += "/META-INF/{AL2.0,LGPL2.1}"
     }
+  }
+}
+
+androidComponents {
+  // The account type and sync authorities follow the id the variant installs under, verify's
+  // suffix included: BuildConfig.APPLICATION_ID, the sync XML and the Kotlin constants are one
+  // value by construction. A mismatch makes sign-in create an account Android cannot sync.
+  onVariants { variant ->
+    val resources = tasks.register<VariantAccountResources>(
+      "accountResources${variant.name.replaceFirstChar { it.uppercase() }}",
+    ) {
+      applicationId.set(variant.applicationId)
+      output.set(layout.buildDirectory.dir("generated/accountResources/${variant.name}/res"))
+    }
+    variant.sources.res?.addGeneratedSourceDirectory(resources) { it.output }
+  }
+  // unotesRelease is the owner's APK, built on his PC: signed with the debug key so it installs
+  // without a release keystore, as the verify build type already is. suiteRelease stays as it
+  // was, unsigned unless upstream's own release signing is configured: this fork does not sign
+  // upstream's app with its own key.
+  onVariants(selector().withFlavor("app", "unotes").withBuildType("release")) { variant ->
+    variant.signingConfig.setConfig(android.signingConfigs.getByName("debug"))
+  }
+}
+
+/**
+ * One variant's account type and sync authorities, from the id that variant is installed under.
+ * Generated because the manifest overlay and the verify suffix change the id per variant, and a
+ * stale string here makes sign-in create an account the sync XML cannot reach.
+ */
+abstract class VariantAccountResources : DefaultTask() {
+  @get:Input abstract val applicationId: Property<String>
+  @get:OutputDirectory abstract val output: DirectoryProperty
+
+  @TaskAction
+  fun write() {
+    val id = applicationId.get()
+    val values = output.get().asFile.resolve("values").apply { mkdirs() }
+    values.resolve("account.xml").writeText(
+      buildString {
+        appendLine("<?xml version=\"1.0\" encoding=\"utf-8\"?>")
+        appendLine("<!-- Generated from the variant's application id (BuildConfig.APPLICATION_ID). -->")
+        appendLine("<resources>")
+        appendLine("  <string name=\"account_type\">$id.account</string>")
+        for (s in listOf("reminders", "notes", "photos")) appendLine("  <string name=\"authority_$s\">$id.$s</string>")
+        appendLine("</resources>")
+      },
+    )
   }
 }
 
