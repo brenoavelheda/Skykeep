@@ -41,9 +41,7 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.selection.selectable
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.verticalScroll
-import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
-import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
@@ -54,7 +52,6 @@ import androidx.compose.material3.ListItem
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.NavigationBar
 import androidx.compose.material3.NavigationBarItem
-import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Switch
@@ -63,7 +60,6 @@ import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
@@ -80,7 +76,6 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import io.github.yashwanthkamireddi.skykeep.R
 import io.github.yashwanthkamireddi.skykeep.sync.Outcome
-import io.github.yashwanthkamireddi.skykeep.sync.SignOut
 import io.github.yashwanthkamireddi.skykeep.sync.setSyncEvery
 import io.github.yashwanthkamireddi.skykeep.sync.syncEvery
 import kotlinx.coroutines.Dispatchers
@@ -359,23 +354,25 @@ private fun spoken(names: List<String>): String =
  * covers every service; once it lands, they sync.
  */
 @Composable
-private fun DataProtection(engine: uniffi.quince_mobile.AccountInterface, last: Map<String, Outcome.Last?>, onApproved: () -> Unit) {
+internal fun DataProtection(engine: uniffi.quince_mobile.AccountInterface, last: Map<String, Outcome.Last?>, onApproved: () -> Unit) {
   val scope = rememberCoroutineScope()
+  val app = androidx.compose.ui.res.stringResource(R.string.app_name)
   var now by remember { mutableStateOf<uniffi.quince_mobile.DataAccessNow?>(null) }
   var asking by remember { mutableStateOf(false) }
   // From what the phone holds alone, read again whenever a sync says something new.
   LaunchedEffect(last) { now = withContext(Dispatchers.IO) { runCatching { engine.dataAccessStanding() }.getOrNull() } }
   val n = now ?: return
   if (n.state == uniffi.quince_mobile.DataState.OPEN && !asking) return
-  val what = spoken(n.services.mapNotNull { PROTECTED[it] })
+  // uNotes cloud asks only for Notes, whatever else Advanced Data Protection holds.
+  val what = spoken(n.services.mapNotNull { PROTECTED[it] }.filter { !io.github.yashwanthkamireddi.skykeep.BuildConfig.NOTES_ONLY || it == "Notes" })
   val text = when {
     asking || n.state == uniffi.quince_mobile.DataState.WAITING ->
-      "Check your iPhone, iPad or Mac and allow Skykeep. $what will sync as soon as you do."
+      "Check your iPhone, iPad or Mac and allow $app. $what will sync as soon as you do."
     n.state == uniffi.quince_mobile.DataState.WEB_ACCESS_OFF ->
       "Advanced Data Protection is on, and Access iCloud Data on the Web is off. Turn it on in iCloud settings on your iPhone to sync here."
     n.state == uniffi.quince_mobile.DataState.NOT_SENT ->
       "Apple couldn't show the request on your devices. Make sure your iPhone is signed in to iCloud, then try again."
-    else -> "Advanced Data Protection keeps $what until you approve Skykeep on one of your devices. Everything on this phone stays."
+    else -> "Advanced Data Protection keeps $what until you approve $app on one of your devices. Everything on this phone stays."
   } + (n.problem?.let { " $it" } ?: "")
   Notice(text) {
     if (n.state != uniffi.quince_mobile.DataState.WEB_ACCESS_OFF) {
@@ -548,7 +545,6 @@ private fun SyncSwitch(account: Account?, authority: String, title: String, deta
 @Composable
 private fun SettingsPage(engine: uniffi.quince_mobile.AccountInterface, account: Account?, onSignedOut: () -> Unit, onLicences: () -> Unit) {
   val context = LocalContext.current
-  val scope = rememberCoroutineScope()
   Text("Settings", style = MaterialTheme.typography.headlineLarge)
   Surface(color = MaterialTheme.colorScheme.surfaceContainer, shape = MaterialTheme.shapes.large) {
     Box(Modifier.fillMaxWidth().padding(16.dp)) { AccountRow(engine, account) }
@@ -621,72 +617,7 @@ private fun SettingsPage(engine: uniffi.quince_mobile.AccountInterface, account:
     }
   }
   Spacer(Modifier.height(8.dp))
-  var leaving by remember { mutableStateOf(false) }
-  var unsent by remember { mutableIntStateOf(0) }
-  var working by remember { mutableStateOf(false) }
-  var trouble by remember { mutableStateOf<String?>(null) }
-  OutlinedButton(
-    modifier = Modifier.fillMaxWidth(),
-    colors = ButtonDefaults.outlinedButtonColors(contentColor = MaterialTheme.colorScheme.error),
-    enabled = !working,
-    onClick = {
-      scope.launch {
-        // Everything not yet at Apple: the phone's contacts and calendars, and the notes,
-        // reminders and photo changes waiting in the engine's library.
-        unsent = withContext(Dispatchers.IO) {
-          (account?.let { SignOut.unsent(context.contentResolver, it) } ?: 0) +
-            (runCatching { engine.unsentChanges().toInt() }.getOrDefault(0))
-        }
-        leaving = true
-      }
-    },
-  ) { Text("Sign Out") }
-  trouble?.let { Text(it, color = MaterialTheme.colorScheme.error) }
-  if (leaving) {
-    AlertDialog(
-      onDismissRequest = { leaving = false },
-      title = { Text("Sign out of iCloud on this phone?") },
-      text = {
-        Text(
-          (if (unsent > 0) "$unsent changes made on this phone haven't reached iCloud yet and won't be sent.\n\n" else "") +
-            "Keep a copy and your contacts and calendars stay on this phone as its own, no longer synced. iCloud itself isn't changed either way.",
-        )
-      },
-      // Three choices, stacked as Material lays out more than two: the safe one first, the one
-      // that removes in the error colour, Cancel last.
-      confirmButton = {
-        Column(horizontalAlignment = Alignment.End) {
-          for ((label, keep) in listOf("Keep a Copy" to true, "Remove from Phone" to false)) {
-            TextButton(
-              onClick = {
-                leaving = false
-                working = true
-                scope.launch {
-                  val done = withContext(Dispatchers.IO) {
-                    runCatching {
-                      account?.let { a ->
-                        if (keep) SignOut.keepCopy(context.contentResolver, a)
-                        SignOut.removeAccount(context, a)
-                      }
-                      // Remove from Phone: the account's library and Skykeep's own copies go too,
-                      // as the desktop's Remove does; nothing of it is left in the app's storage.
-                      if (!keep) { engine.forgetAccount(); SignOut.forgetHere(context) }
-                      engine.signOut()
-                      io.github.yashwanthkamireddi.skykeep.widgets.WidgetUpdates.scheduleAll(context)
-                    }
-                  }
-                  working = false
-                  done.onSuccess { onSignedOut() }.onFailure { trouble = "Couldn't sign out: ${it.message}" }
-                }
-              },
-              colors = if (keep) ButtonDefaults.textButtonColors() else ButtonDefaults.textButtonColors(contentColor = MaterialTheme.colorScheme.error),
-            ) { Text(label) }
-          }
-          TextButton(onClick = { leaving = false }) { Text("Cancel") }
-        }
-      },
-    )
-  }
+  SignOutButton(engine, account, onSignedOut)
 }
 
 /** A setting that is on or off: its name, what it means, and Android's switch; the whole row toggles. */
@@ -732,6 +663,6 @@ private fun showCalendar(context: Context, account: Account, id: Long, visible: 
 
 /** "5 minutes ago", in the phone's language. */
 /** "just now" under a minute (Android's own words would be "0 minutes ago"), then "5 minutes ago". */
-private fun ago(ms: Long, now: Long = System.currentTimeMillis()): String =
+internal fun ago(ms: Long, now: Long = System.currentTimeMillis()): String =
   if (now - ms < DateUtils.MINUTE_IN_MILLIS) "just now"
   else DateUtils.getRelativeTimeSpanString(ms, now, DateUtils.MINUTE_IN_MILLIS).toString().lowercase()

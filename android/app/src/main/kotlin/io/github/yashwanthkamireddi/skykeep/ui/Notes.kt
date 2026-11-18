@@ -138,7 +138,13 @@ private sealed interface NPlace {
  * and is sent behind; a note's formatting is kept by the engine whatever is typed.
  */
 @Composable
-fun NotesPage(engine: AccountInterface) {
+fun NotesPage(
+  engine: AccountInterface,
+  // uNotes cloud's, on the folders alone: its Settings in their top bar, and what needs the
+  // person above them. The suite has these on Home.
+  folderActions: @Composable androidx.compose.foundation.layout.RowScope.() -> Unit = {},
+  folderNotices: @Composable () -> Unit = {},
+) {
   val context = LocalContext.current
   val scope = rememberCoroutineScope()
   var place by rememberSaveable(stateSaver = NPlaceSaver) { mutableStateOf<NPlace>(NPlace.Folders) }
@@ -211,6 +217,7 @@ fun NotesPage(engine: AccountInterface) {
         Row(Modifier.padding(start = 4.dp, end = 8.dp, top = 4.dp), verticalAlignment = Alignment.CenterVertically) {
           if (folder != null) IconButton(onClick = { place = NPlace.Folders; query = "" }) { Icon(painterResource(R.drawable.ic_back), contentDescription = "Folders") }
           Spacer(Modifier.weight(1f))
+          if (folder == null) folderActions()
           if (folder != null && !trash) {
             // Nothing is made yet: a new note is made in iCloud when something is typed in it,
             // so one opened and left empty leaves nothing behind, as in Notes.
@@ -243,6 +250,7 @@ fun NotesPage(engine: AccountInterface) {
         }
         SearchPill(query, { query = it }, Modifier.padding(horizontal = 16.dp, vertical = 12.dp), cursor = MaterialTheme.colorScheme.primary)
         if (folder == null && query.isBlank()) {
+          folderNotices()
           FolderList(folders, onNewFolder = { newFolder = true }) { place = it }
         } else {
           NoteList(engine, notes, order, query, pictures) { n -> place = NPlace.Open(n.guid, folder ?: NPlace.Folder(null, "All iCloud")) }
